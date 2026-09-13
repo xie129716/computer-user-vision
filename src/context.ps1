@@ -195,11 +195,14 @@ switch ($action) {
     if ($null -ne $cfg.hwnd -and [int64]$cfg.hwnd -ne 0) {
       $target = [IntPtr][int64]$cfg.hwnd
     } elseif ($null -ne $cfg.pid -and [int]$cfg.pid -ne 0) {
-      # Prefer the largest visible window owned by that process.
+      # Do NOT require IsWindowVisible here. A hidden or minimized window still
+      # has to be reachable, and filtering on visibility made exactly those
+      # impossible to activate. A non-empty title is the right filter instead: it
+      # skips the invisible IME/helper windows without excluding real ones.
       $best = $null; $bestArea = -1
       foreach ($h in [CUContext]::Handles()) {
-        if (-not [CUContext]::IsWindowVisible($h)) { continue }
         if ([int][CUContext]::PidOf($h) -ne [int]$cfg.pid) { continue }
+        if ([string]::IsNullOrWhiteSpace([CUContext]::Title($h))) { continue }
         $r = New-Object CU_RECT; [CUContext]::RectOf($h, [ref]$r) | Out-Null
         $area = ($r.Right - $r.Left) * ($r.Bottom - $r.Top)
         if ($area -gt $bestArea) { $bestArea = $area; $best = $h }
@@ -213,7 +216,10 @@ switch ($action) {
         if ($t -and $t.ToLower().Contains($needle.ToLower())) { $target = $h; break }
       }
     }
-    if ($target -eq [IntPtr]::Zero) { Emit @{ ok = $false; error = "no matching visible window" } }
+    # `$null -eq [IntPtr]::Zero` is FALSE in PowerShell, so a null target slipped
+    # through and reached Activate(), which reported a misleading IntPtr
+    # conversion error instead of saying that nothing matched.
+    if ($null -eq $target -or $target -eq [IntPtr]::Zero) { Emit @{ ok = $false; error = "no matching window (not found by hwnd/pid/title)" } }
     [CUContext]::Activate($target) | Out-Null
     Start-Sleep -Milliseconds 180
     Emit @{

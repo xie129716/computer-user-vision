@@ -242,13 +242,16 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
   function describeElement(probe) {
     const el = probe?.element;
     if (!el) return probe?.available === false ? 'unavailable' : null;
-    return {
-      name: el.name || undefined,
-      type: el.localizedType || undefined,
-      class: el.className || undefined,
-      pid: el.pid,
-      enabled: el.enabled,
-    };
+    // Only ever assign PRESENT values: a property whose value is `undefined` is
+    // not lossless JSON, and the harness rejects the entire tool result for it.
+    // A plain document control with an empty name is exactly that case.
+    const out = { pid: el.pid, enabled: el.enabled };
+    if (el.name) out.name = el.name;
+    if (el.localizedType) out.type = el.localizedType;
+    if (el.className) out.class = el.className;
+    if (el.automationId) out.automationId = el.automationId;
+    if (Array.isArray(el.rect)) out.rect = el.rect;
+    return out;
   }
 
   /** The focused-window summary, trimmed to what matters for verification. */

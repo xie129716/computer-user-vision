@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.12 (a user message is the re-approval; the plugin stops carrying stale copies of itself)
+
+- **A new user message now lifts a stop.** The stop marker is a hard gate — while it is set every
+  `computer_*` call is refused, and the agent deliberately cannot clear it, so no agent can ever
+  un-stop itself. But that made `/computer` and the chat switch the *only* ways back, so a user who
+  simply typed *"go on, take over again"* was told to go and click a switch: the same instruction,
+  demanded twice. A real user message already is an authorisation event, and an agent cannot forge
+  one — `session/event` carries `source.kind`, which is `'user'` only for a message the human
+  actually sent — so the plugin now listens for it and clears the marker, tracing the reason to
+  `route.log`. The guarantee is unchanged: the stop still lands instantly, and only the user can
+  lift it. The refusal message no longer tells the user to go and find a switch.
+
+- **The plugin reports its real version.** `export const version` was a hard-coded `0.3.0` while the
+  package had reached 0.3.11, so anything naming "the version the plugin says it is" pointed at the
+  wrong code. It is now read from `package.json`, which removes the drift instead of documenting it.
+
+- **`tools/install.mjs`: put a source checkout into a profile.** The fork is not on the registry, so
+  a checkout had to be copied in by hand — which is exactly how the profile and the source drift
+  apart, with the profile quietly serving an older copy while a fix appears to do nothing. The
+  script derives the DSH home (`$DSH_HOME`, else `~/.dsh`) and takes the profile as an argument, so
+  nothing is tied to one machine, and it **refuses** when the profile covers this package with a
+  pnpm patch — the next `pnpm install` would re-apply that patch and silently undo the copy.
+
 ## 0.3.11 (the indicator stops stealing focus; activation failures stop lying)
 
 Both defects surfaced while driving a real HTML5 game on 4399, and each one hid the other.

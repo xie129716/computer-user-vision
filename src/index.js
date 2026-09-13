@@ -27,12 +27,29 @@ import { runPs, powerShellScript } from './ps.js';
 import { createOutputGuard } from './output-guard.js';
 import { createOverlayController } from './overlay.js';
 import { createApprovalStore } from './approvals.js';
-import { mkdirSync, appendFileSync } from 'node:fs';
+import { mkdirSync, appendFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join as joinPath } from 'node:path';
+import { join as joinPath, dirname as dirName } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const name = 'computer-user';
-export const version = '0.3.0';
+
+/**
+ * The plugin's own version, read from its package.json.
+ *
+ * This used to be a hard-coded literal that nobody remembered to bump: it still
+ * said 0.3.0 while the package had reached 0.3.11, so anything reporting "the
+ * version the plugin says it is" pointed at the wrong code. Reading it removes
+ * the drift rather than documenting it.
+ */
+export const version = (() => {
+  try {
+    const here = dirName(fileURLToPath(import.meta.url));
+    return JSON.parse(readFileSync(joinPath(here, '..', 'package.json'), 'utf8')).version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
 
 /** Services required at runtime. */
 export const inject = ['tools'];
@@ -181,6 +198,44 @@ export function apply(ctx, config) {
     } catch { /* diagnostics must never break the plugin */ }
   };
   routeTrace('route block entered');
+
+  // ── a new user message re-authorises control ────────────────────────────────
+  // The stop marker is a HARD gate: while it is set every computer_* call is
+  // refused and the agent cannot clear it - deliberately, so that no agent can
+  // ever un-stop itself. But that left /computer and the chat switch as the only
+  // ways back, so a user who simply typed "go on, take over again" was told to go
+  // and click a switch: the same instruction, demanded twice.
+  //
+  // A real user message IS an authorisation event, and an agent cannot forge one:
+  // the session event carries `source.kind`, which is 'user' only for a message
+  // the human actually sent (queued/injected messages carry a different kind). So
+  // honour it as the re-approval it plainly is. The guarantee stays intact - the
+  // stop still lands instantly and only the USER can lift it.
+  try {
+    if (typeof ctx.on === 'function') {
+      ctx.effect(() => {
+        const off = ctx.on('session/event', (session, event) => {
+          try {
+            if (!event || event.type !== 'user/message') return;
+            const source = event.data?.source;
+            if (source && source.kind !== 'user') return;
+            const stopped = overlay.stopReason();
+            if (stopped === null) return; // nothing to lift
+            overlay.clearStop();
+            routeTrace(`stop cleared by a user message (was: ${stopped})`);
+          } catch (error) {
+            routeTrace(`re-authorise handler threw: ${String(error?.message ?? error)}`);
+          }
+        });
+        return () => { try { off?.(); } catch { /* ignore */ } };
+      }, 'computer-user: re-authorise on a user message');
+      routeTrace('re-authorise hook registered');
+    } else {
+      routeTrace('re-authorise hook skipped: ctx.on is not a function');
+    }
+  } catch (error) {
+    routeTrace(`re-authorise hook registration THREW: ${String(error?.message ?? error)}`);
+  }
 
   // ── control switch route (the chat-input toggle) ──
   // One on/off switch for beginners: flipping it on does what /computer does,

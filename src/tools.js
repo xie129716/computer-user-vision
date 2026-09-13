@@ -72,11 +72,12 @@ const MODES = ['disabled', 'readonly', 'manual', 'auto'];
  * the user needs to approve via /computer first.
  */
 function modeGate(cfg, toolName, approvedSessions, sessionId, controlState) {
-  // A user stop outranks every mode: the overlay's Cancel button and its global
-  // hotkey both land here, and nothing runs again until the user re-approves.
-  // The message deliberately carries INTENT, not just a refusal - "blocked"
-  // alone invites the model to hunt for a workaround instead of handing control
-  // back, which is the opposite of what the user asked for by pressing stop.
+  // A user stop outranks every mode: the overlay's Stop button and its global
+  // hotkey both land here, and nothing runs again until the user re-approves -
+  // which a new user message, /computer, and the chat switch each do. The message
+  // deliberately carries INTENT, not just a refusal: "blocked" alone invites the
+  // model to hunt for a workaround instead of handing control back, which is the
+  // opposite of what the user asked for by pressing stop.
   const stopped = controlState?.stopLabel?.();
   if (stopped) {
     throw new Error(
@@ -86,12 +87,12 @@ function modeGate(cfg, toolName, approvedSessions, sessionId, controlState) {
         '  · 用户本次不希望由 AI 操控电脑，想自己接手；\n' +
         '  · 用户想换一种方式完成（例如改用命令行 / API / 文件操作，而不是 GUI 操控）。\n' +
         '本轮必须遵守：\n' +
-        '  1. 立即停止一切电脑操控，不要重试、不要换工具绕开、不要试图重新拉起控制界面——\n' +
-        '     在用户重新授权之前，所有 computer_* 工具都会持续拒绝；\n' +
+        '  1. 立即停止一切电脑操控，不要重试、不要换工具绕开、不要试图重新拉起控制界面；\n' +
         '  2. 用一两句话说明你已经做了什么、停在哪一步，以及是否存在未完成或可能已产生\n' +
         '     影响的操作需要用户确认；\n' +
-        '  3. 询问用户希望如何继续（自己接手 / 换方式 / 重新授权 / 就此结束），然后等待回复。\n' +
-        '用户重新授权的方式：在对话框输入 /computer（这会同时解除停止状态）。'
+        '  3. 然后就「希望如何继续」提问并等待回复（自己接手 / 换方式 / 继续 / 结束）。\n' +
+        '恢复方式：用户只要再发一条消息就会自动解除停止；/computer 和对话框左侧的开关同样有效。\n' +
+        '所以不要要求用户去点开关或敲命令——把情况说清楚、问清楚就够了。'
     );
   }
   const mode = cfg.mode ?? 'manual';

@@ -161,6 +161,22 @@ If you *do* keep a local pnpm patch, **pin the version exactly** (`"computer-use
 caret). A patched-dependency key is version-exact, so a caret range resolving to a newer release
 silently drops the patch — taking both fixes with it.
 
+### Installing a source checkout into a profile
+
+`dsh plugin add` fetches the published package. When you are working on the source itself, the
+profile can otherwise keep serving an older copy — a fix made in the checkout appears to do
+nothing. This puts the checkout you are looking at into the profile:
+
+```bash
+node tools/install.mjs web --dry-run     # list what would be copied
+node tools/install.mjs web               # copy it in
+```
+
+Nothing is tied to one machine: the DSH home comes from `$DSH_HOME` (falling back to `~/.dsh`) and
+the profile is an argument. It **refuses** when the profile installs this package through a pnpm
+patch, because the next `pnpm install` re-applies that patch and would silently undo the copy — pass
+`--force` once you have decided how you want to own that.
+
 ### Then
 
 Restart `dsh web` — bundle lists are composed at boot, so an already-running server will not pick

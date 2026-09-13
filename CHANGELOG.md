@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.3.28 (0.3.27 over-fitted to the one window it was found on)
+
+- **0.3.27 refused to enumerate any window whose root element reports no rectangle. That was an
+  over-fit, and it is reverted.** It was written against a single observed case — a minimized ToDesk
+  window whose root `BoundingRectangle` is `Rect.Empty` — but a host can report `Rect.Empty` for the
+  root while its children carry perfectly usable rectangles. Returning early therefore threw away
+  windows that are perfectly enumerable, which is exactly the kind of "fix the case in front of you,
+  break the general one" change this plugin cannot afford.
+
+  The behaviour now is: **enumerate always.** `rootW`/`rootH` of 0 means *unknown*, and the only
+  place that consults it — the "a nameless element covering the whole window is a container" filter —
+  stands down when the window's own size is unknown, because at 0 it would match every element. If
+  nothing is found *and* the rectangle was missing, the caller gets the missing rectangle as the
+  explanation. A window with no rectangle and real children returns its children.
+
+- **New `verify/general-workflows.mjs` (17 checks).** The plugin is not for any one application, so
+  this drives the whole interaction surface against **four unrelated UI stacks** and asserts an
+  observable outcome each time, never "the call returned ok":
+
+  | group | stack | what it proves |
+  | --- | --- | --- |
+  | A | window manager | inventory rectangles are consistent; activate by hwnd / title / pid; a packaged app does not resolve to its 0x0 helper; a bogus pid is refused with a reason |
+  | B | plain Win32 (Notepad) | refs enumerate; a click by ref lands on the ref's exact centre; mixed ASCII + CJK + Cyrillic typed text round-trips through the clipboard; the wheel really scrolls (proved by a luminance profile of the page); a press-and-hold drag really selects |
+  | C | UWP/XAML (Calculator) | live pattern flags are present (the cached-flag regression cannot return); clicking a digit changes the display's accessible name |
+  | D | guards | `expect_window` refuses on a mismatch and sends **no** input; an unknown ref is refused |
+
+  Three of its first-run failures were the test's own bugs, and two of them are worth recording
+  because they would mislead anyone repeating this:
+  - equal-length lines make a band-luminance profile **periodic**, so a document can scroll a long
+    way with the profile unmoved — the document has to be non-uniform for the oracle to mean anything;
+  - a digit button must be identified by `automationId` (`num4Button`), not by accessible name: the
+    name is localised, and on a Chinese UI matching `0`-`9` finds nothing.
+
+- **Two general behaviours recorded, not changed.** `computer_activate_window` by the pid of
+  `ApplicationFrameHost` is genuinely ambiguous — that process hosts several frames at once
+  (measured: 计算器 and 设置 both belong to it), so it resolves to one of them and there is no way to
+  know which the caller meant. Pass the app's own pid, an hwnd, or a title. And `pointer_landed` is a
+  display string like `[995,558]`, consistent with `target` and `under_cursor`, not an array.
+
 ## 0.3.27 (a window with no rectangle took the whole tool call down)
 
 Found by running `verify/element-refs.mjs` against a minimized ToDesk window, which the desktop

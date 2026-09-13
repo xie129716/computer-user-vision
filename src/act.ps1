@@ -476,17 +476,17 @@ function Get-RefList {
   $rootR = $rootEl.Current.BoundingRectangle
   $rootSize = Get-RectSize $rootR
   $rootW = $rootSize.W; $rootH = $rootSize.H
-  if ($rootW -le 0 -or $rootH -le 0) {
-    # An empty root rectangle is not hypothetical: a minimized window, a hidden
-    # window, or one owned by a remote-control session reports Rect.Empty, whose
-    # Width and Height are double.NegativeInfinity. Casting that to [int] used to
-    # throw and abort the entire tool call with exit 1 -
-    # verify/element-refs.mjs caught it on a minimized ToDesk window, where
-    # computer_screenshot returned a hard error instead of "no controls".
-    # There is genuinely nothing to enumerate, so say WHY rather than hand back a
-    # bare empty list the caller has to guess about.
-    return @{ ok = $false; reason = 'the window reports no on-screen rectangle (minimized, hidden, or a remote-control session), so there are no controls to enumerate' }
-  }
+  # rootW/rootH are 0 when the window reports no rectangle at all (Rect.Empty, whose
+  # Width/Height are double.NegativeInfinity - the cast that used to throw and abort
+  # the whole call, caught by verify/element-refs.mjs on a minimized ToDesk window).
+  #
+  # That is NOT a reason to refuse the enumeration. A host can report Rect.Empty for
+  # the root while its children still carry usable rectangles, so refusing here would
+  # throw away a window that is perfectly enumerable - an over-fit to one observed
+  # case. Enumeration proceeds; 0 only means "unknown", and the only place it is
+  # consulted is the "covers the whole window" filter below, which stands down when
+  # the window's own size is unknown. If nothing is found AND the rectangle was
+  # missing, the caller is told that at the end instead.
 
   $cache = New-Object System.Windows.Automation.CacheRequest
   $added = 0
@@ -550,9 +550,10 @@ function Get-RefList {
         if (-not ($hasName -or $actionable -or $hinted -or ($ctName -in @('Text', 'Image', 'Document')))) { continue }
       }
       # A nameless element covering the whole window is that window's content
-      # container, not a target. (rootW/rootH are guaranteed non-zero here - an
-      # empty root rectangle returns early above.)
-      if (-not $actionable -and $w -ge ($rootW - 2) -and $h -ge ($rootH - 2)) { continue }
+      # container, not a target. Only a meaningful test when the window's own
+      # rectangle is known: at 0 it would match every element and empty the list for
+      # the wrong reason.
+      if (-not $actionable -and $rootW -gt 0 -and $rootH -gt 0 -and $w -ge ($rootW - 2) -and $h -ge ($rootH - 2)) { continue }
 
       $rows.Add([pscustomobject]@{
         name         = $nm
@@ -579,6 +580,12 @@ function Get-RefList {
   # Deterministic reading order (top-to-bottom, then left-to-right) so a ref is
   # reproducible, and so a human reading the annotated image sees a sane list.
   $sorted = @($rows | Sort-Object @{ Expression = { [int]($_.rect[1] / 10) } }, @{ Expression = { [int]$_.rect[0] } })
+  # Nothing found AND no rectangle for the window itself: now the missing rectangle
+  # IS the explanation, and saying so beats handing back a bare empty list. When
+  # something was found the missing rectangle is irrelevant and is not mentioned.
+  if ($sorted.Count -eq 0 -and $rootW -le 0 -and $rootH -le 0) {
+    return @{ ok = $false; reason = 'the window reports no on-screen rectangle (minimized, hidden, or a remote-control session) and no controls could be read inside it' }
+  }
   return @{ ok = $true; rows = $sorted; scanned = $scanned; total = $found.Count; ms = $sw.ElapsedMilliseconds; fetch_ms = $fetchMs; scan_capped = $scanCapped }
 }
 

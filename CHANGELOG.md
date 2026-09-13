@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.3.24 (gestures: the press had no duration, and nothing said so)
+
+Found by re-running the 4399 Gomoku game that defeated an earlier attempt, and then verifying the
+whole gesture set against a clipboard instead of by eye.
+
+- **EVERY PRESS WAS INSTANTANEOUS.** Merging the three one-shot scripts in 0.3.18 put the button-down
+  and the button-up into a **single `SendInput` batch**, so the press lasted ~0 ms. The upstream
+  script had slept 40 ms between them; that was lost. A zero-length press silently breaks every
+  target that measures it: long-press-to-place games, press-and-hold menus, and double-click
+  detection that needs two real presses. Restored, as a parameter rather than a constant:
+
+  - `computer_click` takes **`press_ms`** (default 50, 0..10000)
+  - `computer_drag` takes **`hold_ms`** (how long to hold BEFORE the pointer starts moving,
+    default 0) — which is also how a press-and-hold is expressed at all: give the same point twice.
+
+- **The duration was applied but never reported**, so a caller could not tell a 50 ms click from a
+  600 ms one. Both tools now return `press_ms` / `hold_ms`. The new guard below caught this on its
+  first run, which is exactly what it is for.
+
+- **New guard `B2c`**: a `press_ms: 600` click must report `press_ms=600` AND take at least 600 ms of
+  wall clock. A regression here is invisible in the result payload alone.
+
+Gesture set verified objectively — the clipboard is the ground truth, not a look at the screen:
+
+| gesture | evidence |
+| --- | --- |
+| double-click | double-clicking the word `bravo` in Notepad put `bravo ` on the clipboard; a **single** click at the same point selected nothing |
+| drag | dragging from the start of one line to the end of another put exactly `DELTA echo foxtrot` on the clipboard |
+| press duration | `press_ms=50` → 718 ms wall, `press_ms=800` → 1537 ms wall |
+
+For the record, on the Gomoku game itself: the grid was measured from the screenshot pixels
+(15 lines each way, 28.5 px pitch, cross-checked against the four star points and the centre stone),
+and the long-press-drag then placed stones **within 3 px of the intended intersections** — against
+an earlier run where nine blind clicks placed a single stone. The game's instruction, 长按拖动落子,
+is literally "long-press, then drag"; it was never a missing feature, only a broken press.
+
 ## 0.3.23 (a click that could not be aimed was still sent)
 
 Found by driving a real application end to end: a VPN client, the Windows desktop, and a browser

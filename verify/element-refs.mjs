@@ -217,6 +217,18 @@ if (!WITH_CLICK) {
           `[${cursor.x},${cursor.y}]` === byRef.clicked,
           `cursor [${cursor.x},${cursor.y}] vs clicked ${byRef.clicked}`);
 
+        // The press must actually last. Sending the press and the release in one
+        // SendInput batch made it instantaneous, which silently breaks every
+        // long-press / press-and-hold target -- measured on a 4399 Gomoku game
+        // where neither a click nor a drag moved a single stone until the hold
+        // was restored. Wall-clock is the only honest way to check it.
+        const t0 = Date.now();
+        const held = await tool('computer_click').execute({ ref: chosen.ref, press_ms: 600 }, exec);
+        const heldMs = Date.now() - t0;
+        check('B2c press_ms is honoured (the button really stays down)',
+          Number(held.press_ms) === 600 && heldMs >= 600,
+          `press_ms=${held.press_ms}, wall ${heldMs} ms for a 600 ms press`);
+
         const uniqueName = (chosen.name ?? '').trim() !== '' && nameCount.get(chosen.name) === 1;
         if (!uniqueName) {
           skip('B3 click by accessible name', 'this window exposes its controls unnamed, so only ref targeting applies here');

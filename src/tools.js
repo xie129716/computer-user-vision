@@ -619,7 +619,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
       'Click a control. Give ONE of: ref (an element ref such as "e12" from computer_screenshot / computer_elements), name (the control\'s visible text, matched exactly first then as a substring), or coordinate.',
       'ref and name are resolved against the live UI Automation tree at click time, so the click follows the control if the window moved since the screenshot. Prefer them over coordinate.',
       `${HEAD}`,
-      'Parameters: ref, name, coordinate ([x,y] virtual-screen pixels), action (click [default] | right_click | double_click | middle_click), expect_window (refuse unless the focused window title contains this), no_invoke (force a real mouse click instead of the control\'s UI Automation action).',
+      'Parameters: ref, name, coordinate ([x,y] virtual-screen pixels), action (click [default] | right_click | double_click | middle_click), press_ms (how long the button stays down, default 50; raise it for a long press), expect_window (refuse unless the focused window title contains this), no_invoke (force a real mouse click instead of the control\'s UI Automation action).',
       'Returns the point actually clicked, how it was performed (invoke/toggle/select/expand = the control was activated directly, mouse = synthetic click at its centre), the target rectangle, what sits under the click afterwards, and whether the click only raised the window.',
     ].join(' '),
     parameters: {
@@ -630,6 +630,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         name: { type: 'string', description: 'Accessible name / visible text of the control in the focused window.' },
         coordinate: { ...COORD, description: 'Fallback: [x, y] relative to virtual-screen origin. Prefer ref or name.' },
         action: { type: 'string', enum: ['click', 'right_click', 'double_click', 'middle_click'], description: 'Default click.' },
+        press_ms: { type: 'number', description: 'How long the button is held down, in ms (default 50, max 10000). Raise it for press-and-hold or long-press interactions, which never fire if the press and the release are effectively simultaneous.' },
         expect_window: EXPECT_WINDOW,
         no_invoke: { type: 'boolean', description: 'Skip the UI Automation action and always send a synthetic mouse click.' },
       },
@@ -647,6 +648,9 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         probe: cfg.verify_actions !== false,
       };
       if (args?.no_invoke === true) payload.no_invoke = true;
+      // Passed through so long-press / press-and-hold targets can be driven; the
+      // executor clamps it to 0..10000 and defaults to 50 ms.
+      if (Number.isFinite(Number(args?.press_ms))) payload.pressMs = Math.trunc(Number(args.press_ms));
 
       const refArg = typeof args?.ref === 'string' ? args.ref.trim() : '';
       const nameArg = typeof args?.name === 'string' ? args.name.trim() : '';
@@ -702,6 +706,9 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
 
       const out = { clicked: `[${(res.clicked ?? []).join(',')}]` };
       out.method = res.method;
+      // Report the press duration that was actually used, so a caller can confirm a
+      // long press really was long instead of assuming it.
+      if (res.press_ms !== undefined) out.press_ms = res.press_ms;
       if (res.moved_to) out.pointer_landed = `[${res.moved_to.join(',')}]`;
       if (res.target) {
         const t = res.target;
@@ -855,12 +862,17 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
 
   const computerDrag = {
     name: 'computer_drag',
-    description: [`Drag from start to end (press, interpolate, release). ${HEAD}`, 'Parameters: start_coordinate (required [x,y]), end_coordinate (required [x,y]), hold_keys (optional array, e.g. ["shift"] pressed while dragging).'],
+    description: [
+      `Drag from start to end (press, hold, interpolate, release). ${HEAD}`,
+      'This is also the tool for gestures that BEGIN with a press: give the same point twice and set hold_ms, and it becomes a press-and-hold / long press, which a plain click cannot express because its press and release are effectively simultaneous.',
+      'Parameters: start_coordinate (required [x,y]), end_coordinate (required [x,y]), hold_ms (optional ms to keep the button down BEFORE the pointer starts moving, default 0 — raise it for long-press-then-drag gestures such as touch-style games), hold_keys (optional array, e.g. ["shift"] pressed while dragging), expect_window.',
+    ].join(' '),
     parameters: {
       type: 'object', additionalProperties: true,
       properties: {
         start_coordinate: COORD,
         end_coordinate: COORD,
+        hold_ms: { type: 'number', description: 'Milliseconds to hold the button down before moving (default 0, max 10000). A long-press recogniser never fires without this.' },
         hold_keys: { type: 'array', items: { type: 'string' } },
         expect_window: EXPECT_WINDOW,
       },
@@ -870,15 +882,17 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       gate('computer_drag');
-      const res = await runPs('act.ps1', {
+      const payload = {
         action: 'drag', from: args.start_coordinate, to: args.end_coordinate,
         holdKeys: args.hold_keys ?? [], expectWindow: args?.expect_window,
-      }, { signal: exec?.signal });
+      };
+      if (Number.isFinite(Number(args?.hold_ms))) payload.holdMs = Math.trunc(Number(args.hold_ms));
+      const res = await runPs('act.ps1', payload, { signal: exec?.signal });
       if (res.refused) {
         const from = Array.isArray(args.start_coordinate) ? args.start_coordinate.join(',') : '';
         return { from: `[${from}] 未拖拽`, to: '', refused: true, hint: `当前前景窗口不含「${res.expected_window}」，请先 computer_activate_window 聚焦。` };
       }
-      return { from: res.from, to: res.to };
+      return { from: res.from, to: res.to, ...(res.hold_ms === undefined ? {} : { hold_ms: res.hold_ms }) };
     },
   };
 

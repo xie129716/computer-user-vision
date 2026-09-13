@@ -847,14 +847,35 @@ function Do-Click {
     # NEVER click from the wrong place -- see Test-PointerPlaced.
     if ($got[0] -ne $x -or $got[1] -ne $y) { return (Test-PointerPlaced $x $y) }
     Start-Sleep -Milliseconds 25
-    if ($btn -eq 'right_click') { [CUAct]::Button([CUAct]::MOUSEEVENTF_RIGHTDOWN, [CUAct]::MOUSEEVENTF_RIGHTUP) }
-    elseif ($btn -eq 'double_click') {
-      [CUAct]::Button([CUAct]::MOUSEEVENTF_LEFTDOWN, [CUAct]::MOUSEEVENTF_LEFTUP)
-      Start-Sleep -Milliseconds 40
-      [CUAct]::Button([CUAct]::MOUSEEVENTF_LEFTDOWN, [CUAct]::MOUSEEVENTF_LEFTUP)
+
+    # How long the button stays down.
+    #
+    # Sending the press and the release in ONE SendInput batch makes the press
+    # effectively instantaneous. The upstream script slept 40 ms between them and
+    # that was lost when the three one-shot scripts were merged here, which breaks
+    # every interaction that measures a press: HTML5 games that want a "long press"
+    # (measured on a 4399 Gomoku game, where neither a click nor a drag moved a
+    # single stone), press-and-hold menus, and any control that distinguishes a
+    # tap from a press. Default 50 ms, overridable per call with press_ms.
+    $pressMs = 50
+    if ($null -ne $cfg.pressMs) {
+      $pressMs = [int]$cfg.pressMs
+      if ($pressMs -lt 0) { $pressMs = 0 }
+      if ($pressMs -gt 10000) { $pressMs = 10000 }
     }
-    elseif ($btn -eq 'middle_click') { [CUAct]::Button([CUAct]::MOUSEEVENTF_MIDDLEDOWN, [CUAct]::MOUSEEVENTF_MIDDLEUP) }
-    else { [CUAct]::Button([CUAct]::MOUSEEVENTF_LEFTDOWN, [CUAct]::MOUSEEVENTF_LEFTUP) }
+
+    if ($btn -eq 'right_click') {
+      [CUAct]::Down([CUAct]::MOUSEEVENTF_RIGHTDOWN); Start-Sleep -Milliseconds $pressMs; [CUAct]::Up([CUAct]::MOUSEEVENTF_RIGHTUP)
+    } elseif ($btn -eq 'double_click') {
+      [CUAct]::Down([CUAct]::MOUSEEVENTF_LEFTDOWN); Start-Sleep -Milliseconds $pressMs; [CUAct]::Up([CUAct]::MOUSEEVENTF_LEFTUP)
+      Start-Sleep -Milliseconds 40
+      [CUAct]::Down([CUAct]::MOUSEEVENTF_LEFTDOWN); Start-Sleep -Milliseconds $pressMs; [CUAct]::Up([CUAct]::MOUSEEVENTF_LEFTUP)
+    } elseif ($btn -eq 'middle_click') {
+      [CUAct]::Down([CUAct]::MOUSEEVENTF_MIDDLEDOWN); Start-Sleep -Milliseconds $pressMs; [CUAct]::Up([CUAct]::MOUSEEVENTF_MIDDLEUP)
+    } else {
+      [CUAct]::Down([CUAct]::MOUSEEVENTF_LEFTDOWN); Start-Sleep -Milliseconds $pressMs; [CUAct]::Up([CUAct]::MOUSEEVENTF_LEFTUP)
+    }
+    $out.press_ms = $pressMs
     $out.moved_to = $got
   }
   $out.method = $method
@@ -1056,6 +1077,16 @@ switch ($action) {
       Start-Sleep -Milliseconds 40
     }
     [CUAct]::Down([CUAct]::MOUSEEVENTF_LEFTDOWN)
+    # Optional dwell before the pointer starts moving, for gestures that begin with
+    # a deliberate long press (touch-style "press, then drag to place"). Without it
+    # the drag starts moving immediately and a long-press recogniser never fires.
+    $holdMs = 0
+    if ($null -ne $cfg.holdMs) {
+      $holdMs = [int]$cfg.holdMs
+      if ($holdMs -lt 0) { $holdMs = 0 }
+      if ($holdMs -gt 10000) { $holdMs = 10000 }
+    }
+    if ($holdMs -gt 0) { Start-Sleep -Milliseconds $holdMs }
     $steps = 14
     for ($i = 1; $i -le $steps; $i++) {
       $px = [int]($sx + ($tx - $sx) * $i / $steps); $py = [int]($sy + ($ty - $sy) * $i / $steps)
@@ -1070,7 +1101,7 @@ switch ($action) {
       $rev = @($cfg.holdKeys); [array]::Reverse($rev)
       foreach ($hk in $rev) { $r = Resolve-Key $hk; if ($null -ne $r -and $r.ContainsKey('vk')) { [CUAct]::KeyUp($r.vk) } }
     }
-    Emit @{ ok = $true; from = @($sx, $sy); to = @($tx, $ty); cursor = [CUAct]::Cursor() }
+    Emit @{ ok = $true; from = @($sx, $sy); to = @($tx, $ty); hold_ms = $holdMs; cursor = [CUAct]::Cursor() }
   }
 
   'scroll' {

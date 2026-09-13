@@ -26,6 +26,7 @@ import { createComputerTools } from './tools.js';
 import { runPs, powerShellScript } from './ps.js';
 import { createOutputGuard } from './output-guard.js';
 import { createOverlayController } from './overlay.js';
+import { createApprovalStore } from './approvals.js';
 
 export const name = 'computer-user';
 export const version = '0.3.0';
@@ -102,11 +103,15 @@ export function apply(ctx, config) {
   // Owned here rather than in the tools because its lifetime is the plugin's:
   // it must come up when the agent actually holds control and go away on unload.
   const overlay = createOverlayController({ getConfig, logger: ctx.logger });
+  // Approvals live on disk: an in-memory Set meant re-typing /computer after
+  // every host restart, and again for every new conversation.
+  const approvals = createApprovalStore({ logger: ctx.logger });
   const controlState = {
     stopLabel: () => overlay.stopLabel(),
     clearStop: () => overlay.clearStop(),
     pauseForCapture: () => overlay.pauseForCapture(),
     resumeAfterCapture: () => overlay.resumeAfterCapture(),
+    isApproved: (sid) => approvals.isApproved(sid),
   };
 
   /** Whether this session may act, i.e. whether the indicator belongs on screen. */
@@ -115,7 +120,7 @@ export function apply(ctx, config) {
     if (cfg.mode === 'disabled' || cfg.mode === 'readonly') return false;
     if (cfg.mode === 'auto') return true;
     const sid = exec?.agent?.session?.header?.sessionId ?? exec?.sessionId ?? '';
-    return approvedSessions.has(sid);
+    return approvals.isApproved(sid);
   };
 
   ctx.effect(() => () => overlay.shutdown({ purge: true }), 'computer-user: control indicator');
@@ -169,16 +174,47 @@ export function apply(ctx, config) {
         name: 'computer',
         description: '批准当前会话使用 computer-user 的全部工具（手动批准模式下需要）',
         handler: async (invocation) => {
-          // /computer 是开关：第一次批准当前会话，再按一次撤销批准。
+          // /computer 是开关：按一次批准，再按一次撤销。
           const targets = sessionTargetsFromInvocation(invocation);
-          const { approved } = toggleApproval(approvedSessions, targets);
           const ids = [...targets].join(', ');
+          const scope = getConfig()?.approval_scope === 'profile' ? 'profile' : 'session';
+
+          if (scope === 'profile') {
+            // One grant covering every conversation, remembered on disk so a
+            // restart does not silently take the computer away again.
+            const next = !approvals.isProfileTrusted();
+            approvals.setProfileTrusted(next);
+            if (next) overlay.clearStop();
+            return next
+              ? {
+                  kind: 'success',
+                  text:
+                    '✅ 已批准（长期，所有会话生效）：computer-user 全部工具可用，已写入磁盘，宿主重启后仍保留。'
+                    + '\n再按一次 /computer 可撤销。'
+                    + `\n批准文件：${approvals.file}`,
+                }
+              : { kind: 'success', text: '🔒 已撤销长期批准：所有会话恢复为需要批准，请重新按 /computer 授权。' };
+          }
+
+          // Session scope: toggle this conversation's grant, persisted so a host
+          // restart keeps it. New conversations still start unapproved.
+          const { approved } = toggleApproval(approvedSessions, targets);
+          for (const id of targets) {
+            if (approved) approvals.addSession(id);
+            else approvals.removeSession(id);
+          }
           // Approving is also how a user lifts a stop they triggered from the
           // indicator's button or hotkey.
           if (approved) overlay.clearStop();
           return approved
-            ? { kind: 'success', text: `✅ 已批准：computer-user 全部工具在当前会话可用（${ids}）。后续轮次持续生效；再按 /computer 可撤销。${overlay.stopReason() ? '' : '（若之前按过停止，本次授权已一并解除）'}` }
-            : { kind: 'success', text: `🔒 已撤销批准：computer-user 有副作用工具需重新 /computer 批准（${ids}）。` };
+            ? {
+                kind: 'success',
+                text:
+                  `✅ 已批准：computer-user 全部工具在本会话（${ids}）持续可用，本会话后续轮次无需重复授权，宿主重启后也保留。`
+                  + '\n新对话需要重新按一次；若想一次批准所有会话，把「批准范围」设为 profile。'
+                  + '\n再按一次 /computer 可撤销。',
+              }
+            : { kind: 'success', text: `🔒 已撤销批准：本会话（${ids}）的有副作用工具需重新 /computer 批准。` };
         },
       });
       ctx.logger?.info?.('[computer-user] /computer command registered');

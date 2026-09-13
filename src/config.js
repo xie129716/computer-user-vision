@@ -13,6 +13,10 @@ export const Config = z.object({
     .boolean()
     .default(false)
     .description('AI 是否可自行修改运行模式（computer_set_mode 工具是否可用），默认不可。AI 修改后同步更新设置下拉框'),
+  approval_scope: z
+    .union([z.const('session'), z.const('profile')])
+    .default('session')
+    .description('批准范围（手动批准模式下生效）：session=每个会话按一次 /computer，本会话后续所有轮次持续有效；profile=按一次即对所有会话长期有效，直到再按 /computer 撤销。两种都写入磁盘，宿主重启后不丢'),
   screenshot_dir: z
     .string()
     .default('')

@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.6+vision.3 (approval persistence)
+
+`/computer` was granted into a module-level Set. It did survive across turns
+within one session, but it evaporated on every host restart and had to be typed
+again in every new conversation — and because the command is a toggle, a second
+press silently revoked it.
+
+- **Approvals are now stored on disk** (`$DSH_HOME/computer-user-approvals.json`,
+  falling back to `~/.dsh`). A session grant survives a host restart, so the
+  computer is not silently taken away by a routine `dsh web` restart. The file
+  holds session ids and one boolean — no transcripts, no paths, nothing read
+  from the screen.
+- **New `approval_scope` setting**: `session` (default) keeps the per
+  conversation grant; `profile` makes one `/computer` cover every conversation,
+  current and future, until it is revoked with another `/computer`. This is the
+  answer to "do I really have to type this in every new chat".
+- The command now reports exactly what it granted and for how long, and prints
+  the approval file path so the grant is auditable.
+- The settings card gained a generic enum dropdown (the old `mode` field type
+  hard-wired the run-mode choices) and now renders **every** top-level field —
+  it used to hard-code the first two, so a new setting could vanish from the UI
+  without a word.
+
+For zero friction there is still `mode: auto`, which needs no approval at all;
+the indicator and the stop button keep working in that mode.
+
 ## 0.3.6+vision.2 (control indicator, third pass)
 
 Four defects reported from watching the second pass run, each fixed at its root:

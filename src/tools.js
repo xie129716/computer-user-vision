@@ -102,7 +102,12 @@ function modeGate(cfg, toolName, approvedSessions, sessionId, controlState) {
     throw new Error(`computer-user 只读模式：${toolName} 不允许执行，仅截图/读光标/等待可用`);
   }
   if (mode === 'manual' && !READONLY_TOOLS.has(toolName)) {
-    const approved = sessionId && approvedSessions && approvedSessions.has(sessionId);
+    // The approval store is the source of truth because it also knows about the
+    // persistent profile-wide scope; the in-memory set remains as a fallback for
+    // hosts that never wired the store up.
+    const approved = typeof controlState?.isApproved === 'function'
+      ? controlState.isApproved(sessionId)
+      : !!(sessionId && approvedSessions && approvedSessions.has(sessionId));
     if (!approved) {
       const e = new Error(
         '需要批准：当前为手动批准模式。请在对话框输入 /computer 批准后重试（批准后本轮及后续轮次均可使用）。'

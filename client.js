@@ -92,6 +92,10 @@ window.__ModuleLoader__.load({
       modeHint: "禁用=全部拒绝 | 只读=仅截图/读光标/等待 | 手动批准=需 /computer 命令批准后可用 | 自动=LLM自由调用所有工具",
       aiCanChangeMode: "AI 可自行修改运行模式",
       aiCanChangeModeHint: "开启后 AI 可通过 computer_set_mode 工具自行切换模式（默认关闭）。AI 修改会同步更新本下拉框。",
+      approvalScope: "批准范围",
+      approvalScopeHint: "session：每个会话按一次 /computer，本会话后续轮次无需重复；profile：按一次即对所有会话长期有效。两者都写入磁盘，宿主重启后不丢。再按一次 /computer 可撤销。",
+      approvalScopeSession: "按会话（本会话持续有效）",
+      approvalScopeProfile: "长期（所有会话通用）",
       advanced: "高级设置",
       screenshotDir: "截图输出目录（空 = 系统临时目录）",
       defaultScale: "截图默认缩放 0.1..1",
@@ -132,6 +136,10 @@ window.__ModuleLoader__.load({
       modeHint: "Disabled=refuse all | Read-only=screenshot/cursor/wait only | Manual approval=need /computer command to unlock | Automatic=LLM freely calls all tools",
       aiCanChangeMode: "AI may change mode itself",
       aiCanChangeModeHint: "When on, the AI can switch modes via the computer_set_mode tool (default off). AI changes are reflected in this dropdown.",
+      approvalScope: "Approval scope",
+      approvalScopeHint: "session: approve once per conversation with /computer, and it holds for every later turn; profile: approve once and it covers every conversation. Both are written to disk and survive a host restart. Press /computer again to revoke.",
+      approvalScopeSession: "Per conversation",
+      approvalScopeProfile: "Profile-wide (persistent)",
       advanced: "Advanced",
       screenshotDir: "Screenshot output dir (empty = OS temp)",
       defaultScale: "Screenshot default scale 0.1..1",
@@ -166,6 +174,11 @@ window.__ModuleLoader__.load({
     var FIELDS = [
       { key: "mode", type: "mode", labelKey: "mode", hintKey: "modeHint" },
       { key: "ai_can_change_mode", type: "checkbox", labelKey: "aiCanChangeMode", hintKey: "aiCanChangeModeHint" },
+      { key: "approval_scope", type: "select", labelKey: "approvalScope", hintKey: "approvalScopeHint",
+        options: [
+          { value: "session", labelKey: "approvalScopeSession" },
+          { value: "profile", labelKey: "approvalScopeProfile" },
+        ] },
       { key: "screenshot_dir", type: "text", labelKey: "screenshotDir", advanced: true },
       { key: "default_scale", type: "number", labelKey: "defaultScale", advanced: true },
       { key: "vision_feedback", type: "checkbox", labelKey: "visionFeedback", hintKey: "visionFeedbackHint", advanced: true },
@@ -183,6 +196,7 @@ window.__ModuleLoader__.load({
     var CFG_KEYS = {
       mode: "mode", ai_can_change_mode: "ai_can_change_mode",
       screenshot_dir: "screenshot_dir", default_scale: "default_scale",
+      approval_scope: "approval_scope",
       vision_feedback: "vision_feedback", vision_max_pixels: "vision_max_pixels",
       grid_spacing: "grid_spacing", verify_actions: "verify_actions",
       overlay: "overlay", overlay_idle_seconds: "overlay_idle_seconds", overlay_label: "overlay_label",
@@ -285,6 +299,21 @@ window.__ModuleLoader__.load({
         setNotice(null); setError(null);
       }
       function renderField(f) {
+        // A generic enum dropdown, so new settings do not have to reuse the
+        // run-mode select (which offers the wrong choices by definition).
+        if (f.type === "select") {
+          return h("label", { key: f.key, className: "__cu_field" },
+            h("span", { className: "__cu_label" }, t(f.labelKey)),
+            h("select", {
+              className: "__cu_input",
+              value: fieldDraft(f),
+              onChange: function (e) { setField(f, e.target.value); },
+            }, f.options.map(function (o) {
+              return h("option", { key: o.value, value: o.value }, t(o.labelKey));
+            })),
+            f.hintKey ? h("p", { className: "__cu_hint" }, t(f.hintKey)) : null
+          );
+        }
         if (f.type === "mode") {
           return h("label", { key: f.key, className: "__cu_field" },
             h("span", { className: "__cu_label" }, t("mode")),
@@ -324,10 +353,9 @@ window.__ModuleLoader__.load({
       var advanced = FIELDS.filter(function (f) { return f.advanced; });
       return h("div", { className: "__cu_section" },
         h("p", { className: "__cu_intro" }, t("intro")),
-        // 运行模式（自带 label 的 select）
-        h("div", { className: "__cu_card" }, renderField(top[0])),
-        // AI 可自行修改运行模式
-        h("div", { className: "__cu_card" }, renderField(top[1])),
+        // Render every top field. Hard-coding top[0]/top[1] silently dropped any
+        // field added later, which is how a new setting could vanish from the UI.
+        top.map(function (f) { return h("div", { key: f.key, className: "__cu_card" }, renderField(f)); }),
         advanced.length ? h("details", { className: "__cu_advanced" },
           h("summary", { className: "__cu_advancedSummary" }, t("advanced")),
           h("div", { className: "__cu_advancedBody" },

@@ -178,12 +178,19 @@ computer_screenshot → image_compare             # 验证
 src/capture.ps1     DPI 感知多屏截图（System.Drawing）
 src/input.ps1       SendInput 鼠标键盘后端
 src/ps.js           PowerShell 运行器（base64 JSON、超时、取消）
-src/tools.js       10 个 computer_* 工具定义 + enabled/confirm 门禁 + 视觉直返
+src/context.ps1     窗口 / 前台 / 元素探测（含激活与 UWP 内容显示）
+src/tools.js        12 个 computer_* 工具定义 + 模式门禁 + 前置焦点校验 + 视觉直返
+src/overlay.ps1     控制指示器（渐变光框 / 光标光晕 / 顶部横幅 + 停止按钮 + 全局热键）
+src/overlay.js      指示器生命周期（心跳 / 截图暂停 / 停止标记）
+src/approvals.js    /computer 授权落盘（跨宿主重启保持）
+src/output-guard.js 把写成对话文本的伪工具调用打回
 src/config.js       设置命名空间 schema
-src/index.js        插件入口（注册工具 + 设置热载）
+src/index.js        插件入口（注册工具 + 设置热载 + 控制路由 + 用户消息重新授权）
 client.js           Web 设置卡（ModuleLoader bundle，中英）
-scripts/           实机冒烟脚本（安全窗口）
-tests/             node:test 单测
+skills/             面向模型的技能文档（computer-use.md）
+tools/              健康检查 doctor 与 profile 安装器 install.mjs
+verify/             可移植验证脚本（纯 node，不需要浏览器）
+docs/               适配说明
 ```
 
 ## 许可

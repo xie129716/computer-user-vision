@@ -249,19 +249,19 @@ under one pixel.
 ## Layout
 
 ```
-src/                     plugin source (capture.ps1, input.ps1, tools.js, config.js, index.js, …)
+src/                     plugin source (capture.ps1, input.ps1, context.ps1, tools.js, overlay.*, index.js, …)
 skills/computer-use.md   the model-facing skill: the two modes, click discipline, coordinate rules
 client.js                web settings card
-tools/                   computer-user-doctor.mjs + doctor.cmd (health check / self-heal)
-verify/                  the four verification scripts
-docs/                    adaptation notes + the preserved upstream README
+tools/                   doctor (health check / self-heal) and install.mjs (put a checkout into a profile)
+verify/                  portable verification scripts (plain node, no browser required)
+docs/                    adaptation notes
 ```
 
 ---
 
 ## Credits & license
 
-Original plugin, design and smoke tests: **[jing-hy](https://github.com/jing-hy/computer-user)** (MIT).
+Original plugin and design: **[jing-hy](https://github.com/jing-hy/computer-user)** (MIT).
 The cross-generation settings bridge follows the pattern used by
 [dsh-imagegen](https://www.npmjs.com/package/@dickpy/dsh-imagegen).
 

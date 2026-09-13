@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.13 (the repository is the upgraded plugin, and nothing else)
+
+A download of this repository used to arrive as the upgraded plugin **plus** whatever the original
+`computer-user` package happened to carry along — files nobody here had touched, referenced by
+nothing, and indistinguishable at a glance from the parts that matter.
+
+- **Removed the original package's leftovers.** `scripts/smoke-*.ps1` (seven unmodified upstream
+  hand-test scripts) and `docs/upstream-README.md` (a copy of the original README) are gone. Neither
+  was referenced by any file here, and the portable `verify/*.mjs` scripts superseded the smoke
+  tests. The `LICENSE` stays: MIT requires the upstream copyright notice to travel with the code.
+- **`package.json#files` now matches what the plugin actually is.** It still listed `scripts` (now
+  gone) and omitted `tools`, so the installer added in 0.3.12 would not have been packaged at all.
+  A published tarball and a `git clone` now contain the same set.
+- **The doctor runs from the repository too.** `tools/computer-user-doctor.mjs` hard-coded its own
+  location as `<profile>/scripts/`, which is where it is *deployed* — so running it straight from a
+  checkout searched `<repo>/node_modules/computer-user` and reported a perfectly healthy profile as
+  "package not installed". It now resolves the profile from either layout, with `CU_PROFILE_DIR` /
+  `CU_PROFILE` overrides, and is verified working from both.
+
 ## 0.3.12 (a user message is the re-approval; the plugin stops carrying stale copies of itself)
 
 - **A new user message now lifts a stop.** The stop marker is a hard gate — while it is set every

@@ -22,16 +22,50 @@
  *      reports it instead of guessing, and the pinned version keeps it in place.
  *
  * Usage:
- *   node scripts/computer-user-doctor.mjs           # check, exit 1 if unhealthy
- *   node scripts/computer-user-doctor.mjs --heal    # repair what is repairable
- *   node scripts/computer-user-doctor.mjs --quiet   # only problems (postinstall)
+ *   node tools/computer-user-doctor.mjs           # check, exit 1 if unhealthy
+ *   node tools/computer-user-doctor.mjs --heal    # repair what is repairable
+ *   node tools/computer-user-doctor.mjs --quiet   # only problems (postinstall)
  */
 import { readFile, writeFile, access, rename, unlink } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const PROFILE_DIR = join(HERE, '..');
+
+/**
+ * Locate the profile that owns the installed package.
+ *
+ * This file ships in the repository's `tools/`, but it is meant to be COPIED
+ * into a profile's `scripts/` and run from that profile's `postinstall`. Those
+ * two layouts put the package in different places, so resolve both instead of
+ * assuming one: from `<profile>/scripts/` the package sits beside `HERE/..`,
+ * while from a checkout the profile has to be looked up under the DSH home. An
+ * earlier version hard-coded `HERE/..`, so running it straight from a checkout
+ * searched `<repo>/node_modules/computer-user` and declared a perfectly healthy
+ * profile "not installed".
+ *
+ * Overrides: CU_PROFILE_DIR (the profile directory), CU_PROFILE (its name).
+ */
+function resolveProfileDir() {
+  const explicit = process.env.CU_PROFILE_DIR;
+  if (explicit) return resolve(explicit);
+
+  const beside = resolve(join(HERE, '..'));
+  const hasPackage = (dir) => existsSync(join(dir, 'node_modules', 'computer-user', 'package.json'));
+  if (hasPackage(beside)) return beside;
+
+  const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh');
+  const candidate = join(dshHome, 'profiles', process.env.CU_PROFILE || 'web');
+  if (hasPackage(candidate)) return candidate;
+
+  // Nothing matched: report against the sibling path, which gives the clearest
+  // "package not installed at …" message for the layout we were run from.
+  return beside;
+}
+
+const PROFILE_DIR = resolveProfileDir();
 const PKG_DIR = join(PROFILE_DIR, 'node_modules', 'computer-user');
 const SETTINGS_PKG = '@deepseek-ai/dsh-settings';
 

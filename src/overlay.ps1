@@ -111,6 +111,53 @@ public class CUOverlayNative {
   public static void Hide(IntPtr h) { ShowWindow(h, SW_HIDE); }
   public static void ShowNoActivate(IntPtr h) { ShowWindow(h, SW_SHOWNOACTIVATE); }
 
+  [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr h);
+  [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr h, IntPtr dc);
+  [DllImport("gdi32.dll")] public static extern IntPtr CreateCompatibleDC(IntPtr dc);
+  [DllImport("gdi32.dll")] public static extern bool DeleteDC(IntPtr dc);
+  [DllImport("gdi32.dll")] public static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
+  [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr obj);
+  [DllImport("user32.dll")] public static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr hdcDst,
+    ref LPOINT pptDst, ref LSIZE psize, IntPtr hdcSrc, ref LPOINT pptSrc, uint crKey,
+    ref LBLEND pblend, uint dwFlags);
+
+  [StructLayout(LayoutKind.Sequential)] public struct LSIZE { public int cx, cy; }
+  [StructLayout(LayoutKind.Sequential)] public struct LPOINT { public int x, y; }
+  [StructLayout(LayoutKind.Sequential, Pack = 1)]
+  public struct LBLEND { public byte BlendOp, BlendFlags, SourceConstantAlpha, AlphaFormat; }
+
+  /**
+   * Commit an HBITMAP to a layered window with REAL per-pixel alpha.
+   *
+   * This replaces the TransparencyKey approach entirely. A colour key cannot
+   * express partial transparency - a semi-transparent pixel composites with the
+   * key colour instead of vanishing - which is what ate the gradient, tinted it
+   * pink and squeezed a 7px band down to 1-2px. UpdateLayeredWindow takes a 32bpp
+   * ARGB bitmap directly, so every pixel carries its own alpha and nothing gets
+   * keyed away. SourceConstantAlpha applies the global pulse without redrawing.
+   */
+  public static bool PushHBitmap(IntPtr hwnd, IntPtr hBmp, int w, int h, int x, int y, int alpha) {
+    IntPtr screenDc = GetDC(IntPtr.Zero);
+    IntPtr memDc = CreateCompatibleDC(screenDc);
+    IntPtr old = IntPtr.Zero;
+    try {
+      old = SelectObject(memDc, hBmp);
+      LSIZE size; size.cx = w; size.cy = h;
+      LPOINT src; src.x = 0; src.y = 0;
+      LPOINT dst; dst.x = x; dst.y = y;
+      LBLEND blend;
+      blend.BlendOp = 0;          /* AC_SRC_OVER */
+      blend.BlendFlags = 0;
+      blend.SourceConstantAlpha = (byte)alpha;
+      blend.AlphaFormat = 1;      /* AC_SRC_ALPHA */
+      return UpdateLayeredWindow(hwnd, screenDc, ref dst, ref size, memDc, ref src, 0, ref blend, 2);
+    } finally {
+      if (old != IntPtr.Zero) SelectObject(memDc, old);
+      DeleteDC(memDc);
+      ReleaseDC(IntPtr.Zero, screenDc);
+    }
+  }
+
   /** The IDC_* id matching the live cursor, or 0 when the app uses its own art. */
   public static int CursorShape() {
     var ci = new CURSORINFO();
@@ -162,51 +209,61 @@ $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
 $stopped = $false
 $forms = New-Object System.Collections.ArrayList
 
-# --- the frame -------------------------------------------------------------
-# Four strips that TILE the border without overlapping: the vertical strips are
-# inset by the thickness so each corner belongs to exactly one window. Overlap
-# would double-blend there and make the frame look crooked.
-function New-Strip([int]$x, [int]$y, [int]$w, [int]$h, [bool]$horizontal, $from, $to) {
-  $f = New-Object System.Windows.Forms.Form
-  $f.FormBorderStyle = 'None'
-  $f.ShowInTaskbar = $false
-  $f.StartPosition = 'Manual'
-  $f.TopMost = $true
-  $f.SetBounds($x, $y, $w, $h)
-  # GetNewClosure() captures $from/$to/$horizontal per strip. Passing them through
-  # a script-scope variable instead made the FIRST strip paint before that
-  # variable was set, so its brush was built from null, the Paint handler threw,
-  # and that edge simply never appeared - which is exactly the asymmetry being
-  # reported.
-  $f.add_Paint({
-    param($sender, $e)
-    $rc = $sender.ClientRectangle
-    if ($rc.Width -le 0 -or $rc.Height -le 0) { return }
-    $mode = if ($horizontal) { [System.Drawing.Drawing2D.LinearGradientMode]::Horizontal }
-            else { [System.Drawing.Drawing2D.LinearGradientMode]::Vertical }
-    $brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rc, $from, $to, $mode)
-    try { $e.Graphics.FillRectangle($brush, $rc) } finally { $brush.Dispose() }
-  }.GetNewClosure())
-  [void]$forms.Add($f)
-  return $f
-}
-
-# The frame's colour flows around the perimeter instead of restarting on every
-# edge. With an independent A->B gradient per edge the corners disagree - the
-# top-left is blue/blue while the top-right is cyan/blue and the bottom-right is
-# cyan/cyan - and that reads as a crooked, asymmetric frame however level the
-# geometry actually is. Parameterising the perimeter diagonally makes every
-# corner agree: TL=A, TR=mid, BR=B, BL=mid.
+# --- the frame: ONE full-screen window -------------------------------------
+# It used to be four thin strip windows, which failed for a reason no geometry
+# could fix: Windows enforces a minimum window size (SM_CXMIN/SM_CYMIN = 136x39
+# on this machine), so a 7px-tall window was stretched to 39 and a 7px-wide one
+# to 136 - the left and top edges came out several times thicker than the right
+# and bottom. A screen-sized window cannot be stretched, so that whole failure
+# mode disappears; and with a single Paint there is no per-edge closure to get
+# wrong. The interior is colour-keyed away and the window is click-through, so
+# only the four bands are ever visible or hit-testable.
 $colMid = [System.Drawing.Color]::FromArgb(
   255,
   [int](($colA.R + $colB.R) / 2),
   [int](($colA.G + $colB.G) / 2),
   [int](($colA.B + $colB.B) / 2))
 
-$top = New-Strip $vs.X $vs.Y $vs.Width $thickness $true $colA $colMid
-$bottom = New-Strip $vs.X ($vs.Y + $vs.Height - $thickness) $vs.Width $thickness $true $colMid $colB
-$left = New-Strip $vs.X ($vs.Y + $thickness) $thickness ($vs.Height - 2 * $thickness) $false $colA $colMid
-$right = New-Strip ($vs.X + $vs.Width - $thickness) ($vs.Y + $thickness) $thickness ($vs.Height - 2 * $thickness) $false $colMid $colB
+$frame = New-Object System.Windows.Forms.Form
+$frame.FormBorderStyle = 'None'
+$frame.ShowInTaskbar = $false
+$frame.StartPosition = 'Manual'
+$frame.TopMost = $true
+$frame.SetBounds($vs.X, $vs.Y, $vs.Width, $vs.Height)
+[void]$forms.Add($frame)
+
+# The frame is drawn ONCE into a 32bpp ARGB bitmap at full screen size. Every
+# pulse tick only re-commits that bitmap with a different SourceConstantAlpha,
+# which costs no drawing at all. Nothing here is colour-keyed, so the gradient
+# keeps its real colours and its real 7px width.
+[int]$frmW = $vs.Width
+[int]$frmH = $vs.Height
+[int]$fbt = $thickness
+$frameBmp = New-Object System.Drawing.Bitmap($frmW, $frmH, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+$fg = [System.Drawing.Graphics]::FromImage($frameBmp)
+try {
+  $fg.Clear([System.Drawing.Color]::FromArgb(0, 0, 0, 0))
+  $fg.SmoothingMode = 'None'
+  # The colour flows around the perimeter (TL=A, TR=mid, BR=B, BL=mid) instead of
+  # restarting per edge, so the four corners agree.
+  $rTop = New-Object System.Drawing.Rectangle(0, 0, $frmW, $fbt)
+  $rBottom = New-Object System.Drawing.Rectangle(0, ($frmH - $fbt), $frmW, $fbt)
+  $rLeft = New-Object System.Drawing.Rectangle(0, $fbt, $fbt, ($frmH - 2 * $fbt))
+  $rRight = New-Object System.Drawing.Rectangle(($frmW - $fbt), $fbt, $fbt, ($frmH - 2 * $fbt))
+  $bTop = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rTop, $colA, $colMid, [System.Drawing.Drawing2D.LinearGradientMode]::Horizontal)
+  $bBottom = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rBottom, $colMid, $colB, [System.Drawing.Drawing2D.LinearGradientMode]::Horizontal)
+  $bLeft = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rLeft, $colA, $colMid, [System.Drawing.Drawing2D.LinearGradientMode]::Vertical)
+  $bRight = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rRight, $colMid, $colB, [System.Drawing.Drawing2D.LinearGradientMode]::Vertical)
+  try {
+    $fg.FillRectangle($bTop, $rTop)
+    $fg.FillRectangle($bBottom, $rBottom)
+    $fg.FillRectangle($bLeft, $rLeft)
+    $fg.FillRectangle($bRight, $rRight)
+  } finally {
+    $bTop.Dispose(); $bBottom.Dispose(); $bLeft.Dispose(); $bRight.Dispose()
+  }
+} finally { $fg.Dispose() }
+$frmHB = $frameBmp.GetHbitmap([System.Drawing.Color]::FromArgb(0, 0, 0, 0))
 
 # --- the cursor halo -------------------------------------------------------
 $haloSize = [int][Math]::Max(48, [Math]::Round(96 * $uiScale))
@@ -304,19 +361,21 @@ $halo.FormBorderStyle = 'None'
 $halo.ShowInTaskbar = $false
 $halo.StartPosition = 'Manual'
 $halo.TopMost = $true
-$halo.BackColor = [System.Drawing.Color]::Magenta
-$halo.TransparencyKey = [System.Drawing.Color]::Magenta
 $halo.SetBounds(0, 0, $haloSize, $haloSize)
-$halo.add_Paint({
-  param($sender, $e)
-  # TransparencyKey cannot express soft alpha - a semi-transparent pixel
-  # composites with the key colour instead of vanishing, which is what once
-  # turned these rings pink. Keep every stroke fully opaque.
-  $e.Graphics.SmoothingMode = 'None'
-  $c = $script:haloColor
-  Draw-HaloShape $e.Graphics $script:cursorShape (New-DimColor $c 1.0) (New-DimColor $c 0.5) $script:uiScale
-})
 [void]$forms.Add($halo)
+
+# The halo is an ARGB bitmap too: drawn into a transparent surface, so the ring's
+# soft edges are real alpha instead of a colour key that would tint them pink.
+function New-HaloBitmap([System.Drawing.Color]$colour) {
+  $bmp = New-Object System.Drawing.Bitmap($script:haloSize, $script:haloSize, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+  $g = [System.Drawing.Graphics]::FromImage($bmp)
+  try {
+    $g.Clear([System.Drawing.Color]::FromArgb(0, 0, 0, 0))
+    $g.SmoothingMode = 'AntiAlias'
+    Draw-HaloShape $g $script:cursorShape $colour (New-DimColor $colour 0.5) $script:uiScale
+  } finally { $g.Dispose() }
+  return $bmp
+}
 
 # --- the banner (the only interactive window) ------------------------------
 $banner = New-Object System.Windows.Forms.Form
@@ -403,13 +462,23 @@ $script:uiScale = $uiScale
 $script:haloColor = $colA
 $script:haloSize = $haloSize
 $script:cursorShape = 0
-$script:topStrip = $top
-$script:bottomStrip = $bottom
-$script:leftStrip = $left
-$script:rightStrip = $right
+$script:frameForm = $frame
+$script:frameThickness = $thickness
+$script:colMid = $colMid
+$script:frmHB = $frmHB
+$script:frmW = $frmW
+$script:frmH = $frmH
+$script:frameX = $vs.X
+$script:frameY = $vs.Y
 $script:haloForm = $halo
+$script:haloColor = $colA
+$script:haloX = 0
+$script:haloY = 0
+$script:tick = 0
+$script:haloBmp = New-HaloBitmap $colA
+$script:haloHB = $script:haloBmp.GetHbitmap([System.Drawing.Color]::FromArgb(0, 0, 0, 0))
 $script:bannerForm = $banner
-$script:allForms = @($top, $bottom, $left, $right, $halo, $banner)
+$script:allForms = @($frame, $halo, $banner)
 $script:hidden = $false
 $script:phase = 0.0
 
@@ -440,22 +509,18 @@ $timer.add_Tick({
   $pulse = 0.5 + 0.5 * [Math]::Sin($script:phase)
   $alpha = [byte](45 + 165 * $pulse)
   if (-not $script:hidden) {
-    foreach ($f in @($script:topStrip, $script:bottomStrip, $script:leftStrip, $script:rightStrip)) {
-      if ($f -and $f.IsHandleCreated) { [CUOverlayNative]::SetAlpha($f.Handle, $alpha) }
+    if ($script:frameForm -and $script:frameForm.IsHandleCreated) {
+      [CUOverlayNative]::PushHBitmap($script:frameForm.Handle, $script:frmHB, $script:frmW, $script:frmH, $script:frameX, $script:frameY, $alpha) | Out-Null
     }
-    # The halo is colour-keyed as well as alpha-blended, so it must never go
-    # through plain SetAlpha - that would drop the key and show a magenta square.
     if ($script:haloForm -and $script:haloForm.IsHandleCreated) {
-      [CUOverlayNative]::SetKeyAlpha($script:haloForm.Handle, [uint32]0x00FF00FF, [byte](120 + 135 * $pulse))
+      [CUOverlayNative]::PushHBitmap($script:haloForm.Handle, $script:haloHB, $script:haloSize, $script:haloSize, $script:haloX, $script:haloY, [byte](170 + 85 * $pulse)) | Out-Null
     }
   }
 
   # cursor halo -----------------------------------------------------------
   $p = [System.Windows.Forms.Cursor]::Position
-  $script:haloForm.SetBounds(
-    [int]($p.X - $script:haloSize / 2),
-    [int]($p.Y - $script:haloSize / 2),
-    $haloSize, $haloSize)
+  $script:haloX = [int]($p.X - $script:haloSize / 2)
+  $script:haloY = [int]($p.Y - $script:haloSize / 2)
 
   $shape = [CUOverlayNative]::CursorShape()
   $mix = 0.5 + 0.5 * [Math]::Sin($script:phase)
@@ -464,10 +529,17 @@ $timer.add_Tick({
     [int]($script:colA.R + ($script:colB.R - $script:colA.R) * $mix),
     [int]($script:colA.G + ($script:colB.G - $script:colA.G) * $mix),
     [int]($script:colA.B + ($script:colB.B - $script:colA.B) * $mix))
-  if ($shape -ne $script:cursorShape -or $newColor.ToArgb() -ne $script:haloColor.ToArgb()) {
+  # Rebuild the ring when its SHAPE changes, and every few ticks so the colour
+  # still drifts with the pulse. Each rebuild replaces the HBITMAP, so the stale
+  # one is deleted rather than leaked.
+  $script:tick = ($script:tick + 1) % 5
+  if ($shape -ne $script:cursorShape -or $script:tick -eq 0) {
     $script:cursorShape = $shape
     $script:haloColor = $newColor
-    $script:haloForm.Invalidate()
+    $stale = $script:haloHB
+    $script:haloBmp = New-HaloBitmap $newColor
+    $script:haloHB = $script:haloBmp.GetHbitmap([System.Drawing.Color]::FromArgb(0, 0, 0, 0))
+    if ($stale -ne [IntPtr]::Zero) { [CUOverlayNative]::DeleteObject($stale) | Out-Null }
   }
 
   if ($script:bannerForm -and $script:bannerForm.IsHandleCreated -and -not $script:hidden) {
@@ -477,22 +549,23 @@ $timer.add_Tick({
 
 $banner.add_Shown({
   foreach ($pair in @(
-      @{ f = $script:topStrip; ct = $true }, @{ f = $script:bottomStrip; ct = $true },
-      @{ f = $script:leftStrip; ct = $true }, @{ f = $script:rightStrip; ct = $true },
+      @{ f = $script:frameForm; ct = $true },
       @{ f = $script:haloForm; ct = $true }, @{ f = $script:bannerForm; ct = $false })) {
     if ($pair.f -and $pair.f.IsHandleCreated) { [CUOverlayNative]::NoActivate($pair.f.Handle, $pair.ct) }
   }
-  if ($script:haloForm.IsHandleCreated) {
-    [CUOverlayNative]::SetKeyAlpha($script:haloForm.Handle, [uint32]0x00FF00FF, 235)
+  # First commit with real per-pixel alpha. There is no colour key any more, so
+  # neither window needs SetLayeredWindowAttributes at all.
+  if ($script:frameForm.IsHandleCreated) {
+    [CUOverlayNative]::PushHBitmap($script:frameForm.Handle, $script:frmHB, $script:frmW, $script:frmH, $script:frameX, $script:frameY, 140) | Out-Null
   }
-  foreach ($f in @($script:topStrip, $script:bottomStrip, $script:leftStrip, $script:rightStrip)) {
-    if ($f.IsHandleCreated) { [CUOverlayNative]::SetAlpha($f.Handle, 140) }
+  if ($script:haloForm.IsHandleCreated) {
+    [CUOverlayNative]::PushHBitmap($script:haloForm.Handle, $script:haloHB, $script:haloSize, $script:haloSize, $script:haloX, $script:haloY, 220) | Out-Null
   }
   [CUOverlayNative]::RegisterHotKey($script:bannerForm.Handle, 1, $hotkeyMods, $hotkeyVk) | Out-Null
   $timer.Start()
 })
 
-foreach ($f in @($top, $bottom, $left, $right, $halo)) { $f.Show() }
+foreach ($f in @($frame, $halo)) { $f.Show() }
 $timer.Start()
 
 try {

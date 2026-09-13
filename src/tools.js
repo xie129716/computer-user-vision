@@ -28,7 +28,8 @@ const COORD = {
 
 const HEAD =
   '先调用 computer_screenshot 获取当前屏幕：模型具备视觉能力时截图会直接以图片附加返回，直接观察即可（无需 picturereader）；' +
-  '模型不支持图像时返回文件路径，需交给外部图像分析工具（如 picturereader 的 image_scan / image_ocr）。确认目标后再执行本次操作。';
+  '模型不支持图像时返回文件路径，需交给外部图像分析工具（如 picturereader 的 image_scan / image_ocr）。' +
+  '不要靠缩略图目测坐标——用 computer_list_windows 拿窗口精确矩形，或用 computer_activate_window 先把目标窗口置前（避免第一下点击只用于激活窗口）。确认目标后再执行本次操作。';
 
 /**
  * DeepSeek's normal vision projection budget (640k pixels). A picture larger
@@ -58,6 +59,7 @@ const READONLY_TOOLS = new Set([
   'computer_screenshot',
   'computer_get_cursor_position',
   'computer_wait',
+  'computer_list_windows',
 ]);
 
 const MODES = ['disabled', 'readonly', 'manual', 'auto'];
@@ -69,7 +71,16 @@ const MODES = ['disabled', 'readonly', 'manual', 'auto'];
  * Returns void if allowed, or throws with `awaitingApproval=true` if
  * the user needs to approve via /computer first.
  */
-function modeGate(cfg, toolName, approvedSessions, sessionId) {
+function modeGate(cfg, toolName, approvedSessions, sessionId, controlState) {
+  // A user stop outranks every mode: the overlay's Cancel button and its global
+  // hotkey both land here, and nothing runs again until the user re-approves.
+  const stopped = controlState?.stopLabel?.();
+  if (stopped) {
+    throw new Error(
+      `用户已停止电脑控制（${stopped}）。所有 computer_* 工具在重新授权前保持拒绝；` +
+        '请告知用户已停止，等待其在对话框输入 /computer 重新授权后再继续。'
+    );
+  }
   const mode = cfg.mode ?? 'manual';
   if (mode === 'disabled') {
     throw new Error('computer-user 已禁用：请在「设置 → 电脑操作」切换模式后再使用');
@@ -183,11 +194,50 @@ function screenshotEnvelope(value) {
   return lines.join('\n');
 }
 
-export function createComputerTools({ runPs, getConfig, approvedSessions, sessionId, setMode, ctx }) {
+export function createComputerTools({ runPs, getConfig, approvedSessions, sessionId, setMode, ctx, controlState }) {
   if (typeof runPs !== 'function') throw new Error('computer-user: runPs is required');
   if (typeof getConfig !== 'function') throw new Error('computer-user: getConfig is required');
 
-  const gate = (toolName) => modeGate(getConfig(), toolName, approvedSessions, sessionId);
+  const gate = (toolName) => modeGate(getConfig(), toolName, approvedSessions, sessionId, controlState);
+
+  /** One context.ps1 round trip (window enumeration / hit test / activation). */
+  const ctxPs = (payload, exec) => runPs('context.ps1', payload, { signal: exec?.signal });
+
+  /** Post-action context: what is focused now, and what sits under a point. */
+  async function probeContext(exec, point) {
+    const cfg = getConfig() ?? {};
+    if (cfg.verify_actions === false) return null;
+    try {
+      const payload = { action: 'probe' };
+      if (Array.isArray(point) && point.length === 2) {
+        payload.x = Math.round(Number(point[0]));
+        payload.y = Math.round(Number(point[1]));
+      }
+      return await ctxPs(payload, exec);
+    } catch (error) {
+      ctx?.logger?.warn?.(`[computer-user] probe failed: ${String(error?.message ?? error)}`);
+      return null;
+    }
+  }
+
+  /** Condense a probed element into the few fields a caller can act on. */
+  function describeElement(probe) {
+    const el = probe?.element;
+    if (!el) return probe?.available === false ? 'unavailable' : null;
+    return {
+      name: el.name || undefined,
+      type: el.localizedType || undefined,
+      class: el.className || undefined,
+      pid: el.pid,
+      enabled: el.enabled,
+    };
+  }
+
+  /** The focused-window summary, trimmed to what matters for verification. */
+  function describeWindow(window) {
+    if (!window) return null;
+    return { title: window.title, pid: window.pid, hwnd: window.hwnd, rect: window.rect };
+  }
 
   // -- computer_screenshot ---------------------------------------------------
   const computerScreenshot = {
@@ -207,6 +257,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         path: { type: 'string', description: 'Optional absolute or cwd-relative output path for the PNG. When empty a unique file is created under the configured screenshot_dir (default: OS temp).' },
         region: { type: 'array', minItems: 4, maxItems: 4, items: { type: 'number' }, description: 'Optional [x0, y0, x1, y1] fractions (0..1) to capture only a sub-area of the virtual screen.' },
         scale: { type: 'number', description: 'Optional 0.1..1 downscale for the saved image (default: the configured default_scale, 1 = full resolution). In vision mode the result is additionally fitted into the model\'s pixel budget.' },
+        grid: { type: 'number', description: 'Optional coordinate grid spacing in virtual-screen pixels (e.g. 100). Draws labelled lines so screen coordinates can be read straight off a downscaled image instead of estimated. 0 disables it.' },
       },
       required: [],
     },
@@ -255,8 +306,9 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         : join(dir, `shot-${Date.now()}-${randomBytes(4).toString('hex')}.png`);
       const region = Array.isArray(args?.region) && args.region.length === 4 ? args.region : undefined;
       const requestedScale = typeof args?.scale === 'number' ? args.scale : cfg.default_scale;
+      const gridSpacing = typeof args?.grid === 'number' ? args.grid : (Number(cfg.grid_spacing) || 0);
 
-      const capture = (scale) => runPs('capture.ps1', { outPath, region, scale }, { signal: exec?.signal });
+      const capture = (scale) => runPs('capture.ps1', { outPath, region, scale, grid: gridSpacing }, { signal: exec?.signal });
 
       let res = await capture(requestedScale);
 
@@ -332,8 +384,34 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       gate('computer_click');
+      const point = [Math.round(Number(args.coordinate[0])), Math.round(Number(args.coordinate[1]))];
+      const cfg = getConfig() ?? {};
+      let before = null;
+      if (cfg.verify_actions !== false) {
+        try { before = (await ctxPs({ action: 'foreground' }, exec)).window; } catch { before = null; }
+      }
       const res = await runPs('input.ps1', { action: 'click', coordinate: args.coordinate, action2: args.action ?? 'click' }, { signal: exec?.signal });
-      return { clicked: res.cursor };
+      const probe = await probeContext(exec, point);
+      const after = probe?.foreground ?? null;
+
+      const out = { clicked: res.cursor };
+      const element = describeElement(probe);
+      if (element) out.at = element;
+      if (before && after) {
+        out.foreground_before = before.title || `pid ${before.pid}`;
+        out.foreground_after = after.title || `pid ${after.pid}`;
+        // The click landed inside the window that just came forward, which is
+        // exactly the activation-click failure: it was spent raising the window.
+        const changed = before.hwnd !== after.hwnd;
+        const inside = Array.isArray(after.rect)
+          && point[0] >= after.rect[0] && point[0] <= after.rect[2]
+          && point[1] >= after.rect[1] && point[1] <= after.rect[3];
+        if (changed && inside) {
+          out.activated_only = true;
+          out.hint = '这次点击很可能只把窗口激活、并未命中控件——请重新执行同一次点击。';
+        }
+      }
+      return out;
     },
   };
 
@@ -354,7 +432,13 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         action: 'type', text: String(args.text), sendEnter: !!args.send_enter,
         typingIntervalMs: cfg.typing_interval_ms || 0,
       }, { signal: exec?.signal });
-      return { chars: res.chars };
+      // Report where the text actually went: typing into the wrong window is
+      // silent otherwise.
+      const probe = await probeContext(exec);
+      const out = { chars: res.chars };
+      const focused = describeWindow(probe?.foreground);
+      if (focused) out.focused_window = focused;
+      return out;
     },
   };
 
@@ -371,7 +455,11 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
     async execute(args, exec) {
       gate('computer_keypress');
       const res = await runPs('input.ps1', { action: 'keypress', keys: args.keys }, { signal: exec?.signal });
-      return { keys: res.keys };
+      const probe = await probeContext(exec);
+      const out = { keys: res.keys };
+      const focused = describeWindow(probe?.foreground);
+      if (focused) out.focused_window = focused;
+      return out;
     },
   };
 
@@ -499,14 +587,90 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
     },
   };
 
+  // -- computer_list_windows -------------------------------------------------
+  // Reading a window rectangle off a downscaled screenshot is the single most
+  // common cause of a misclick (observed in practice: a 1.84x downscale turned
+  // a visual estimate into a ~240px error). Ask the OS instead.
+  const computerListWindows = {
+    name: 'computer_list_windows',
+    description: [
+      'List visible top-level windows in z-order (topmost first) with their EXACT virtual-screen pixel rectangles.',
+      'Prefer this over estimating a window position from a screenshot — reading coordinates off a downscaled image is the most common source of misclicks.',
+      'Parameters: min_width / min_height (optional, default 1) drop tiny windows; foreground_only (optional) returns just the focused window.',
+      'Returns { count, zOrderTopFirst, windows:[{ hwnd, pid, title, rect:[left,top,right,bottom], width, height, minimized, foreground }] }.',
+      'Pass an entry\'s hwnd to computer_activate_window to focus it, or use rect to compute a capture region / click target.',
+    ].join(' '),
+    parameters: {
+      type: 'object', additionalProperties: true,
+      properties: {
+        min_width: { type: 'number', description: 'Ignore windows narrower than this (virtual-screen px).' },
+        min_height: { type: 'number', description: 'Ignore windows shorter than this (virtual-screen px).' },
+        foreground_only: { type: 'boolean', description: 'Return only the currently focused window.' },
+      },
+      required: [],
+    },
+    output: textOut({ required: ['count'] }),
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      gate('computer_list_windows');
+      if (args?.foreground_only) {
+        const res = await ctxPs({ action: 'foreground' }, exec);
+        return { count: res.window ? 1 : 0, zOrderTopFirst: true, windows: res.window ? [res.window] : [] };
+      }
+      const res = await ctxPs({
+        action: 'windows',
+        minWidth: typeof args?.min_width === 'number' ? args.min_width : 1,
+        minHeight: typeof args?.min_height === 'number' ? args.min_height : 1,
+      }, exec);
+      return { count: res.count, zOrderTopFirst: res.zOrderTopFirst, windows: res.windows };
+    },
+  };
+
+  // -- computer_activate_window ----------------------------------------------
+  // Windows consumes the first synthetic click on a background window as the
+  // activation click; the control never sees it and nothing reports the loss.
+  // Focusing deliberately removes that whole failure mode.
+  const computerActivateWindow = {
+    name: 'computer_activate_window',
+    description: [
+      'Bring a window to the foreground deliberately, WITHOUT spending a click on it.',
+      'This exists because the first synthetic click on a background window is consumed by activation — it never reaches the control, and nothing reports that it was lost. Focus first, then click.',
+      'Parameters: hwnd (from computer_list_windows, preferred) OR pid OR title (case-insensitive substring).',
+      'Returns { requested, foreground } naming the window that actually ended up focused.',
+    ].join(' '),
+    parameters: {
+      type: 'object', additionalProperties: true,
+      properties: {
+        hwnd: { type: 'number', description: 'Window handle from computer_list_windows (preferred).' },
+        pid: { type: 'number', description: 'Owner process id; its largest visible window is activated.' },
+        title: { type: 'string', description: 'Case-insensitive substring of the window title.' },
+      },
+      required: [],
+    },
+    output: textOut({ required: ['requested', 'foreground'] }),
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      gate('computer_activate_window');
+      const payload = { action: 'activate' };
+      if (args?.hwnd !== undefined && args?.hwnd !== null) payload.hwnd = args.hwnd;
+      else if (args?.pid !== undefined && args?.pid !== null) payload.pid = args.pid;
+      else if (typeof args?.title === 'string' && args.title.trim() !== '') payload.title = args.title.trim();
+      else throw new Error('computer_activate_window: 需要 hwnd / pid / title 之一');
+      const res = await ctxPs(payload, exec);
+      return { requested: res.requested, foreground: describeWindow(res.foreground) };
+    },
+  };
+
   const tools = [
     computerScreenshot,
+    computerListWindows,
     computerClick,
     computerType,
     computerKeypress,
     computerScroll,
     computerDrag,
     computerMoveMouse,
+    computerActivateWindow,
     computerWait,
     computerGetCursorPosition,
     computerSetMode,

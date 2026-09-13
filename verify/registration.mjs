@@ -63,8 +63,10 @@ console.log(`plugin: ${mod.name} v${mod.version}\n`);
 mod.apply(ctx, { mode: 'auto' });
 
 const names = tools.map((t) => t.name).sort();
-check('apply() registers 10 computer_* tools', tools.length === 10, `${tools.length}: ${names.join(', ')}`);
+check('apply() registers 12 computer_* tools', tools.length === 12, `${tools.length}: ${names.join(', ')}`);
 check('computer_screenshot is registered', names.includes('computer_screenshot'));
+check('computer_list_windows is registered (exact window geometry)', names.includes('computer_list_windows'));
+check('computer_activate_window is registered (avoid the activation-click trap)', names.includes('computer_activate_window'));
 check('every tool exposes description + parameters + execute',
   tools.every((t) => typeof t.name === 'string' && typeof t.description === 'string' && t.parameters && typeof t.execute === 'function'));
 check('every tool exposes a render function', tools.every((t) => t.output && typeof t.output.render === 'function'));
@@ -88,6 +90,10 @@ const parsed = cfgMod.Config({});
 check('config schema defaults vision_feedback=true', parsed.vision_feedback === true);
 check('config schema defaults vision_max_pixels=640000', parsed.vision_max_pixels === 640000);
 check('config schema keeps mode default manual', parsed.mode === 'manual');
+check('config schema defaults overlay=true', parsed.overlay === true);
+check('config schema defaults overlay_idle_seconds=25', parsed.overlay_idle_seconds === 25);
+check('config schema defaults verify_actions=true', parsed.verify_actions === true);
+check('config schema defaults grid_spacing=0 (off)', parsed.grid_spacing === 0);
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n==== ${results.length - failed.length}/${results.length} passed ====`);

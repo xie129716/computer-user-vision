@@ -25,6 +25,7 @@ import { NS, Config } from './config.js';
 import { createComputerTools } from './tools.js';
 import { runPs, powerShellScript } from './ps.js';
 import { createOutputGuard } from './output-guard.js';
+import { createOverlayController } from './overlay.js';
 
 export const name = 'computer-user';
 export const version = '0.3.0';
@@ -97,17 +98,39 @@ export function toggleApproval(approvedSessions, targets) {
 }
 
 export function apply(ctx, config) {
+  // ── control indicator ──
+  // Owned here rather than in the tools because its lifetime is the plugin's:
+  // it must come up when the agent actually holds control and go away on unload.
+  const overlay = createOverlayController({ getConfig, logger: ctx.logger });
+  const controlState = {
+    stopLabel: () => overlay.stopLabel(),
+    clearStop: () => overlay.clearStop(),
+  };
+
+  /** Whether this session may act, i.e. whether the indicator belongs on screen. */
+  const controlActive = (exec) => {
+    const cfg = getConfig() ?? {};
+    if (cfg.mode === 'disabled' || cfg.mode === 'readonly') return false;
+    if (cfg.mode === 'auto') return true;
+    const sid = exec?.agent?.session?.header?.sessionId ?? exec?.sessionId ?? '';
+    return approvedSessions.has(sid);
+  };
+
+  ctx.effect(() => () => overlay.shutdown({ purge: true }), 'computer-user: control indicator');
+
   // ── register tools ──
   ctx.effect(() => {
-    for (const tool of createComputerTools({ runPs, getConfig, approvedSessions, sessionId: undefined, setMode, ctx })) {
+    for (const tool of createComputerTools({ runPs, getConfig, approvedSessions, sessionId: undefined, setMode, ctx, controlState })) {
       ctx.tools.register({
         ...tool,
         // Wrap execute to inject the current session ID at call time
         async execute(args, exec) {
           const sid = exec?.agent?.session?.header?.sessionId ?? exec?.sessionId ?? '';
           // Rebuild gate closure with the real session ID
-          const tools = createComputerTools({ runPs, getConfig, approvedSessions, sessionId: sid, setMode, ctx });
+          const tools = createComputerTools({ runPs, getConfig, approvedSessions, sessionId: sid, setMode, ctx, controlState });
           const realTool = tools.find((t) => t.name === tool.name);
+          // Raise (and keep alive) the indicator only while control is real.
+          if (controlActive(exec)) overlay.activity();
           return realTool.execute(args, exec);
         },
       });
@@ -148,8 +171,11 @@ export function apply(ctx, config) {
           const targets = sessionTargetsFromInvocation(invocation);
           const { approved } = toggleApproval(approvedSessions, targets);
           const ids = [...targets].join(', ');
+          // Approving is also how a user lifts a stop they triggered from the
+          // indicator's button or hotkey.
+          if (approved) overlay.clearStop();
           return approved
-            ? { kind: 'success', text: `✅ 已批准：computer-user 全部工具在当前会话可用（${ids}）。后续轮次持续生效；再按 /computer 可撤销。` }
+            ? { kind: 'success', text: `✅ 已批准：computer-user 全部工具在当前会话可用（${ids}）。后续轮次持续生效；再按 /computer 可撤销。${overlay.stopReason() ? '' : '（若之前按过停止，本次授权已一并解除）'}` }
             : { kind: 'success', text: `🔒 已撤销批准：computer-user 有副作用工具需重新 /computer 批准（${ids}）。` };
         },
       });

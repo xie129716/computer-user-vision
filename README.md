@@ -51,6 +51,42 @@ catalog entry says `inputModalities: ["text", "image"]` — such a model can sim
 | 6 | Four graceful fallbacks to the original path contract | `src/tools.js` |
 | 7 | New settings `vision_feedback` (default on) and `vision_max_pixels` (default 640000) | `src/config.js`, `client.js` |
 | 8 | Skill / README / settings-card copy rewritten around the two modes | `skills/`, `README*.md`, `client.js` |
+| 9 | `computer_list_windows` — exact window rectangles from the OS instead of eyeballing a downscaled screenshot | `src/context.ps1`, `src/tools.js` |
+| 10 | `computer_activate_window` — focus a window deliberately, dodging the activation-click trap | `src/context.ps1`, `src/tools.js` |
+| 11 | Actions report context: the UI element under the cursor, foreground before/after, `activated_only` | `src/tools.js` |
+| 12 | Optional labelled coordinate grid drawn onto screenshots | `src/capture.ps1` |
+| 13 | Codex-style control indicator with a hard user stop | `src/overlay.ps1`, `src/overlay.js` |
+
+### The three mistakes this second pass fixes
+
+Each of these was observed while actually driving Windows with the first build:
+
+1. **Estimating coordinates from a downscaled screenshot.** A 1920×1080 capture comes back at
+   1045×588; counting pixels in it produced a ~240 px error and a click that landed on the wrong
+   desktop icon. `computer_list_windows` now returns the OS's own window rectangles, and
+   `computer_screenshot({ grid: 100 })` can label the image with screen coordinates.
+2. **The first click on a background window is consumed by activation.** It never reaches the
+   control and nothing reports the loss — the window simply comes forward and the button does not
+   press. `computer_activate_window` focuses first, and every click now reports
+   `foreground_before`/`foreground_after` plus `activated_only` when that is what happened.
+3. **Typing into the wrong window is silent.** `computer_type` and `computer_keypress` now return
+   `focused_window`, and `computer_click` returns `at` — the accessible name, type and class of
+   whatever sat under the cursor.
+
+### The control indicator
+
+While the plugin holds control, a separate process draws a slowly pulsing gradient along all four
+screen edges, a colour-shifting halo that tracks the cursor (the OS cursor bitmap cannot be
+recoloured, so the halo is the thing that changes), and a top banner naming the controller.
+
+The banner carries a **Stop** button and the global **Ctrl+Alt+Esc** hotkey. Either one writes a
+stop marker that the mode gate turns into a hard refusal of **every** `computer_*` tool, naming the
+cause, until the user re-approves with `/computer`. Only a deliberate user action writes that
+marker — an idle reap or a host shutdown leaves nothing behind, so the plugin can never mistake its
+own cleanup for a user stop.
+
+The indicator is deliberately a separate process with a heartbeat file: it keeps rendering and stays
+clickable even if the agent loop stalls, and it removes itself if the host dies.
 
 ### The coordinate problem (the part that actually bites)
 
@@ -130,8 +166,9 @@ pin keeps it in place.
 ## Verification
 
 ```bash
-node verify/registration.mjs        # 15/15 — tools, settings namespace, /computer, update() write path
+node verify/registration.mjs        # 21/21 — tools, settings namespace, /computer, update() write path
 node verify/vision-screenshot.mjs   # 16/16 — real capture, image block, budget fit, mapping, fallbacks
+node verify/overlay.mjs             #  9/9  — indicator spawns once, heartbeats, reaps, honours overlay=false
 node verify/doctor-heal.mjs         # VALIDATED — break the source, heal it, re-check
 node verify/plugin-exports.mjs      # audit every plugin in the profile for the same class of defect
 ```

@@ -78,6 +78,49 @@ try {
       $vw = $sw; $vh = $sh
     }
   }
+  # Optional coordinate grid, drawn every N VIRTUAL-SCREEN pixels and labelled
+  # with the screen coordinate. A downscaled capture is the usual place a model
+  # loses its place, because the preview no longer has 1:1 pixels to count
+  # against; the labels remove the arithmetic entirely.
+  $grid = 0
+  if ($null -ne $cfg.grid) { $grid = [int]$cfg.grid }
+  if ($grid -ge 20 -and $scale -gt 0) {
+    $g2 = [System.Drawing.Graphics]::FromImage($dst)
+    $labelFont = $null; $labelBrush = $null; $linePen = $null
+    try {
+      $labelFont = New-Object System.Drawing.Font("Consolas", 11)
+      $labelBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(235, 255, 96, 96))
+      $shadowBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(200, 0, 0, 0))
+      $linePen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(110, 255, 96, 96), 1)
+      $step = [double]$grid * $scale        # screen px -> image px
+      if ($step -ge 6) {
+        $i = 0; $x = 0.0
+        while ($x -lt $vw) {
+          $g2.DrawLine($linePen, [int]$x, 0, [int]$x, $vh)
+          $label = "$($vx + [int][Math]::Round($x / $scale))"
+          $px = [single]([int]$x + 3)
+          $g2.DrawString($label, $labelFont, $shadowBrush, $px + 1, 4)
+          $g2.DrawString($label, $labelFont, $labelBrush, $px, 3)
+          $i++; $x = $i * $step
+        }
+        $j = 0; $y = 0.0
+        while ($y -lt $vh) {
+          $g2.DrawLine($linePen, 0, [int]$y, $vw, [int]$y)
+          $label = "$($vy + [int][Math]::Round($y / $scale))"
+          $py = [single]([int]$y + 3)
+          $g2.DrawString($label, $labelFont, $shadowBrush, 4, $py + 1)
+          $g2.DrawString($label, $labelFont, $labelBrush, 3, $py)
+          $j++; $y = $j * $step
+        }
+      }
+    } finally {
+      if ($labelFont) { $labelFont.Dispose() }
+      if ($labelBrush) { $labelBrush.Dispose() }
+      if ($shadowBrush) { $shadowBrush.Dispose() }
+      if ($linePen) { $linePen.Dispose() }
+      $g2.Dispose()
+    }
+  }
   $ext = [System.IO.Path]::GetExtension($outPath).ToLowerInvariant()
   if ($ext -eq ".jpg" -or $ext -eq ".jpeg") {
     $dst.Save($outPath, [System.Drawing.Imaging.ImageFormat]::Jpeg)

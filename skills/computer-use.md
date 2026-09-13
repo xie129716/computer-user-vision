@@ -1,7 +1,18 @@
 # Computer Use（电脑操作）—— 读屏 + 操作鼠标键盘（纯本地，不调用外部 API）
 
-computer-user 插件提供 10 个 `computer_*` 工具，让模型像人手一样操作本机 Windows
+computer-user 插件提供 12 个 `computer_*` 工具，让模型像人手一样操作本机 Windows
 桌面：读屏 → 定位目标 → 点击/输入/按键/滚动/拖拽 → 截图验证。
+
+> **三条铁律（都是踩过坑总结出来的）**：
+>
+> 1. **不要靠缩略图目测坐标**。整屏截图在视觉模式下会被压到 64 万像素以内（1920×1080
+>    会变成约 1045×588，倍率 1.84），在缩小的图上量像素必然偏。要窗口位置就用
+>    `computer_list_windows` 拿 OS 给的**精确矩形**；要读坐标就给截图加 `grid`。
+> 2. **点后台窗口前先 `computer_activate_window`**。对**非前台窗口**的第一下合成点击
+>    只会激活该窗口，**不会传给控件，而且没有任何报错**。先置前再点，或者检查点击返回
+>    里的 `activated_only`。
+> 3. **每步都验证**。点击返回里的 `at` 告诉你光标下到底是什么控件；`foreground_after`
+>    告诉你操作落到了哪个窗口。对不上就重来，不要连着点。
 
 > **看屏有两种模式，先确认自己属于哪一种**：
 >
@@ -31,7 +42,10 @@ computer-user 插件提供 10 个 `computer_*` 工具，让模型像人手一样
    screen_y = virtual_offset[1] + image_y * screen_per_pixel[1]
    ```
    换算结果就是 `computer_click` 等工具要填的**虚拟屏物理像素**坐标。
-3. **定位目标区域**：优先只截目标窗口（见下），画面越小越清晰、坐标越准。
+3. **定位目标窗口（推荐先做）**：`computer_list_windows` 返回所有可见顶层窗口的
+   **精确虚拟屏矩形**和 z 序。拿到 `hwnd` 后用 `computer_activate_window` 把它置前——
+   这一步同时解决了「窗口被遮挡」和「首击只激活」两个问题。
+4. **定位目标区域**：优先只截目标窗口（见下），画面越小越清晰、坐标越准。
 4. **做**：`computer_click` / `computer_type` / `computer_keypress` /
    `computer_scroll` / `computer_drag` / `computer_move_mouse`。
 5. **验**：再 `computer_screenshot`（同一 region），确认达到预期后再进行下一步。
@@ -39,6 +53,53 @@ computer-user 插件提供 10 个 `computer_*` 工具，让模型像人手一样
 
 **一次多读、少点几次**：需要看多个位置时，先截大图定位大致区域，再对可疑区域单独
 `computer_screenshot({region:[…]})` 看清细节；不要「点一下截一次」无谓循环。
+
+---
+
+## 定位与验证工具（专治坐标不准与静默失败）
+
+### `computer_list_windows` —— 不要猜窗口在哪
+
+返回所有可见顶层窗口，按 z 序（最上层在前），每项含：
+
+```
+{ hwnd, pid, title, rect:[left,top,right,bottom], width, height, minimized, foreground }
+```
+
+`rect` 是**像素级精确**的虚拟屏坐标。要拿某窗口做截图 region 或点击目标，直接用它算，
+不要从截图上目测。`min_width` / `min_height` 过滤小窗口，`foreground_only` 只看前台。
+
+### `computer_activate_window` —— 点之前先置前
+
+**这是最容易踩、且毫无报错的坑**：对**非前台窗口**发出第一下点击，Windows 会把它当作
+「激活窗口」消费掉，点击**不会到达控件**。表现就是「我明明点了，什么都没发生」。
+
+```
+computer_activate_window({ hwnd: 132374 })     # 或 { pid } 或 { title: "豆包" }
+```
+
+置前之后再点击才可靠。若 `computer_click` 返回 `activated_only: true`，就是在告诉你
+「刚才那一下只激活了窗口」，应当重试同一次点击。
+
+### 操作后回报（设置 `verify_actions`，默认开）
+
+- `computer_click` 额外返回：
+  - `at`：光标下的 UI 元素（名称 / 控件类型 / class / pid）——**直接告诉你点到了什么**
+  - `foreground_before` / `foreground_after`：前台窗口是否被改变
+  - `activated_only`：是否只是激活了窗口
+- `computer_type` / `computer_keypress` 额外返回 `focused_window`——输入到底送进了
+  哪个窗口。以前输错窗口是完全静默的。
+
+### 截图坐标网格
+
+在缩略图上无法可靠量坐标时，给截图加网格：
+
+```
+computer_screenshot({ grid: 100 })     # 每 100 屏幕像素一条线，标签直接是屏幕坐标
+```
+
+更推荐用 `region` 只截目标窗口：同样 64 万像素预算下，区域越小越清晰，小区域甚至保持
+1:1 像素（倍率 = 1，无需换算）。
 
 ---
 
@@ -94,6 +155,24 @@ Windows 下标准做法（纯本地 PowerShell）：
   是否达到预期；没达到再调整一小步（如 ±10px）。
 - **坐标基准要核实**：视觉模式下务必用 `screen_mapping` 换算，别把图片坐标直接当屏幕
   坐标填进去——`screen_per_pixel` 通常明显大于 1（例如整屏被压到 55% 时约为 1.8）。
+
+---
+
+## 控制指示器与「用户随时可停」
+
+插件接管电脑时会显示一个指示器：**四边渐变呼吸边框 + 跟随鼠标的光环 + 顶部横幅
+「DeepSeek 正在控制电脑」**。横幅上有**停止控制**按钮，全局快捷键 **Ctrl+Alt+Esc**
+同样可以停止。
+
+**用户停止后：所有 `computer_*` 工具一律拒绝**，错误信息会明确说明是被停止的。此时：
+
+- **不要重试，也不要换工具绕开**——那是在违背用户意愿。
+- 直接告知用户「控制已停止」，并说明输入 `/computer` 可以重新授权。
+- 用户重新授权（`/computer`）后停止状态自动解除，可继续。
+
+指示器在无工具调用 `overlay_idle_seconds`（默认 25 秒）后自动收起；**用户主动停止则会
+一直保持停止**，直到重新授权。相关设置：`overlay`（开关）、`overlay_idle_seconds`、
+`overlay_label`（横幅文案）。
 
 ---
 

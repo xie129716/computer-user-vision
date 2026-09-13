@@ -29,6 +29,26 @@ export const Config = z.object({
     .number()
     .default(640000)
     .description('视觉模式下单张截图的最大像素数（默认 640000，与 DeepSeek 视觉投影预算一致）。调大可提高清晰度，但超出服务端预算会被再次降采样，导致坐标倍率失真'),
+  overlay: z
+    .boolean()
+    .default(true)
+    .description('接管电脑时显示控制指示器：四边渐变呼吸边框 + 鼠标光环 + 顶部「正在控制电脑」横幅（含取消按钮与 Ctrl+Alt+Esc 全局快捷键）'),
+  overlay_idle_seconds: z
+    .number()
+    .default(25)
+    .description('无工具调用超过该秒数后指示器自动收起。用户主动按停止后会一直保持停止，直到重新授权（/computer）'),
+  overlay_label: z
+    .string()
+    .default('')
+    .description('指示器横幅文案（空 = 「DeepSeek 正在控制电脑」）'),
+  verify_actions: z
+    .boolean()
+    .default(true)
+    .description('操作后回报上下文：点击后回报前台窗口与光标下的 UI 元素（用于识别「首击仅激活窗口」和「点错控件」），关闭可省去子进程开销'),
+  grid_spacing: z
+    .number()
+    .default(0)
+    .description('截图坐标网格间距（虚拟屏像素，0 = 关闭）。缩略图看不清坐标时设为 100，会在图上叠加带刻度的网格'),
   typing_interval_ms: z
     .number()
     .default(0)

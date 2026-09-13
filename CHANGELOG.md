@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.19 (packaging fix: 0.3.18 shipped without its manifest)
+
+- **0.3.18 is withdrawn.** Its tarball was assembled from the `files` list with `tar` instead of
+  `npm pack`. `package.json` is not in that list — npm always includes it regardless, a hand-rolled
+  archive does not — so the published 0.3.18 archive contained no manifest at all. pnpm installs such
+  a package behind a placeholder (`{"_pnpmPlaceholder": ...}`), which means no `dsh.bundle` metadata
+  for the host to read and no version for the plugin to report. The blast radius is exactly one
+  release: 0.3.15-0.3.17 were built with `npm pack` and do carry their manifest.
+- The tarball is now produced by `npm pack`, and the check that should have caught this is explicit —
+  assert that `package/package.json` is inside the archive *and that it parses* — instead of reading
+  a file listing and noticing only the entry I was looking for.
+
 ## 0.3.18 (clicks that land, and a click that costs one step)
 
 Everything here came from driving a real desktop and measuring, not from reading the code. The two

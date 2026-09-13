@@ -2,13 +2,21 @@
 /**
  * Prepare — and optionally open — the awesome-dsh-plugin submission PR.
  *
+ * Repository housekeeping, not part of the plugin: it lives in `contrib/`, which
+ * is deliberately absent from `package.json#files`, so nothing here ships to a
+ * user who installs the plugin.
+ *
  * The upstream list is huge (thousands of entry files), so this never clones it:
  * it forks, then builds one commit containing one added file through the Git
  * Data API. That also makes it idempotent — re-running it after the 24-hour
  * repository-age gate has passed is the intended workflow.
  *
- *   node tools/open-awesome-pr.mjs           # prepare the branch, print the compare URL
- *   node tools/open-awesome-pr.mjs --open    # also open the PR
+ *   node contrib/open-awesome-pr.mjs           # prepare the branch, print the compare URL
+ *   node contrib/open-awesome-pr.mjs --open    # also open the PR
+ *
+ * Needs an authenticated `gh`. If github.com needs a proxy on your machine,
+ * export HTTPS_PROXY first — this script inherits the environment and never
+ * overrides it.
  *
  * Why the two modes: awesome-dsh-plugin's CI refuses any repository younger than
  * one day (scripts/check-submission.mjs, MIN_AGE_DAYS = 1). Opening the PR before
@@ -18,25 +26,55 @@
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 
+/**
+ * Locate the `gh` CLI.
+ *
+ * `gh` from PATH first, then the copy DSH happens to bundle — a hard-coded path
+ * only ever works on the machine it was written on, and this repository is meant
+ * to be usable from a clone on someone else's.
+ */
+function resolveGh() {
+  const candidates = ['gh'];
+  if (process.env.USERPROFILE) {
+    candidates.push(join(process.env.USERPROFILE, '.workbuddy', 'binaries', 'gh', 'bin', 'gh.exe'));
+  }
+  for (const candidate of candidates) {
+    try {
+      execFileSync(candidate, ['--version'], { stdio: 'ignore' });
+      return candidate;
+    } catch { /* not this one */ }
+  }
+  console.error('gh CLI not found. Install https://cli.github.com and run `gh auth login` first.');
+  process.exit(1);
+}
+
 const UPSTREAM = 'awesome-dsh-plugin/awesome-dsh-plugin';
 const OWNER = 'xie129716';
 const FORK = `${OWNER}/awesome-dsh-plugin`;
 const PLUGIN = 'computer-user-vision';
 const ENTRY_PATH = `data/plugins/${OWNER}__${PLUGIN}.yml`;
 const BRANCH = `add/${OWNER}__${PLUGIN}`;
-const GH = join(process.env.USERPROFILE ?? '', '.workbuddy', 'binaries', 'gh', 'bin', 'gh.exe');
+const GH = resolveGh();
 
 const REPO_URL = `https://github.com/${OWNER}/${PLUGIN}`;
 const TARBALL = `${REPO_URL}/releases/latest/download/computer-user.tgz`;
 
-/** The one file this PR adds. A description containing ": " must be quoted. */
+/**
+ * The one file this PR adds.
+ *
+ * Every clause is a claim the reviewer can check against the code, which is what
+ * the guide asks for — and why there are no adjectives here: "12 computer_* tools"
+ * is countable, `expect_window` and the Stop button are greppable, and
+ * "vision-native" would only have been a word. A description containing ": "
+ * must be quoted.
+ */
 const ENTRY = `url: ${REPO_URL}
 name: ${OWNER}/${PLUGIN}
 category: tools
 tarball: ${TARBALL}
 description:
-  en: 'Windows desktop control (12 tools) for a fork of computer-user: vision-native screenshots, a control indicator with a user stop, and a pre-flight focus guard.'
-  zh: 'computer-use 分叉的 Windows 桌面操控（12 个工具）：视觉原生截图、带用户停止的控制指示器，以及前置焦点校验。'
+  en: 'Windows desktop control for a fork of computer-user: 12 computer_* tools, computer_screenshot returning the picture as a real image with an image-to-screen pixel mapping, an expect_window guard that refuses input when the wrong window has focus, and a control indicator whose Stop button or Ctrl+Alt+Esc blocks every call until the user re-approves.'
+  zh: 'computer-user 分叉的 Windows 桌面操控：12 个 computer_* 工具，computer_screenshot 把画面作为真实图像返回并附带图像→屏幕像素映射；expect_window 前置校验在前台窗口不对时拒绝发送输入；控制指示器的「停止控制」按钮或 Ctrl+Alt+Esc 会阻断所有调用，直到用户重新授权。'
 `;
 
 const TITLE = `Add ${OWNER}/${PLUGIN}`;
@@ -98,12 +136,11 @@ keeps the slot — flagging the overlap so you can judge it rather than discover
   node-semver, not by eye.
 `;
 
-const env = {
-  ...process.env,
-  HTTP_PROXY: 'http://127.0.0.1:8800',
-  HTTPS_PROXY: 'http://127.0.0.1:8800',
-  NO_PROXY: '127.0.0.1,localhost',
-};
+// Inherit the environment exactly as it is. A proxy address is a property of the
+// machine, not of this repository, so none is hard-coded here; if github.com needs
+// one where you run this, export HTTPS_PROXY first and it is picked up like any
+// other tool's.
+const env = { ...process.env };
 
 const gh = (args, body) => {
   const out = execFileSync(GH, args, {
@@ -172,7 +209,7 @@ async function main() {
 
   if (!open) {
     console.log('\nprepared only. Run again with --open once the repository is 1 day old:');
-    console.log('  node tools/open-awesome-pr.mjs --open');
+    console.log('  node contrib/open-awesome-pr.mjs --open');
     return 0;
   }
 

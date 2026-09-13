@@ -1,6 +1,6 @@
 {
     "name":  "computer-user",
-    "version":  "0.3.16",
+    "version":  "0.3.17",
     "description":  "Unofficial fork of computer-user by jing-hy: Codex-style Windows computer use for DeepSeek Harness. Screenshots ride the tool result as real images with an exact image-to-screen coordinate mapping; text-only routes get a PNG path.",
     "type":  "module",
     "main":  "src/index.js",

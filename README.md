@@ -244,6 +244,32 @@ under one pixel.
   unrelated windows never enter the model context.
 - Prefer the default `manual` mode over `auto` when you are not actively watching the run.
 
+### What it does to the system, plainly
+
+The list above is about what *leaves* the machine. This is the other half — the side effects a
+reader should be able to check line by line rather than discover:
+
+- **Spawns a hidden `powershell.exe`** while control is held. That process draws the full-screen
+  topmost indicator and registers the `Ctrl+Alt+Esc` global hotkey, then exits when the heartbeat
+  goes stale. It is deliberately **not** detached, so it cannot outlive the host — a detached GUI
+  process is exactly how an indicator gets stuck on screen forever. Turn it off with `overlay: false`.
+- **Registers exactly one HTTP route on the DSH web server**: `GET`/`POST /computer-user/control`,
+  the endpoint behind the chat-input switch. It refuses any socket that is not loopback
+  (`127.0.0.1` / `::1`), and the only thing it can change is this plugin's own run mode and stop
+  marker — it cannot read files or run commands.
+- **Writes files outside the package**, and nothing else: `$DSH_HOME/computer-user-approvals.json`
+  (which sessions and whether the profile is trusted — it outlives a host restart on purpose, so a
+  restart does not silently revoke control), plus heartbeat / pause / stop / `route.log` files under
+  the OS temp directory. No transcript, no screen content, no keystroke log.
+- **Wraps the LLM provider adapters** (`ctx.llm`) to run the output guard that rejects tool calls
+  written as conversation text. Every chunk is forwarded unchanged unless that pattern matches;
+  `output_guard: false` disables the wrapping entirely.
+- **No telemetry and no outbound requests** from the plugin itself. The only network traffic is the
+  screenshot your model provider already receives, described above.
+
+All of these are also asserted by `verify/` — `registration.mjs`, `overlay.mjs` and
+`plugin-exports.mjs` fail loudly if one of them stops being true.
+
 ---
 
 ## Layout
@@ -255,6 +281,7 @@ client.js                web settings card
 tools/                   doctor (health check / self-heal) and install.mjs (put a checkout into a profile)
 verify/                  portable verification scripts (plain node, no browser required)
 docs/                    adaptation notes
+contrib/                 repository housekeeping, not shipped (the awesome-list submission script)
 ```
 
 ---

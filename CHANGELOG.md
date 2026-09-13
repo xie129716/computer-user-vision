@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.3.17 (a second pass over the submission rules, and the machine-specifics they exposed)
+
+The first pass checked the hard gates — `dsh.bundle`, repo age, topic, peer ranges — and stopped
+there. Going back through the contributing guide rule by rule turned up four things, three of them
+in our own repository rather than in the entry.
+
+- **Two machine-specifics were sitting in a public file.** The submission script hard-coded a local
+  proxy (`http://127.0.0.1:8800`) and the path to the `gh` binary *this* installation happens to
+  bundle. Neither means anything on another machine. The proxy is gone — the environment is
+  inherited, so `HTTPS_PROXY` works like it does for any other tool — and `gh` is now resolved from
+  `PATH` first with the bundled copy only as a fallback, failing with a real message when neither
+  exists. A re-scan for `D:\dsh`, `C:\Users`, the proxy address and the user name comes back empty.
+
+- **The README described what leaves the machine but not what the plugin does to it.** Review point
+  5 asks about surprising behaviour, and four things were only discoverable by reading the source:
+  it spawns a hidden `powershell.exe` that draws a full-screen topmost window and registers a global
+  hotkey; it registers **one HTTP route on the DSH web server** (`/computer-user/control`, the chat
+  switch, loopback-only); it writes an approvals file under `$DSH_HOME` plus heartbeat/stop files in
+  the temp directory; and it **wraps the LLM provider adapters** for the output guard. All four are
+  now stated plainly, with what each one can and cannot do.
+
+- **The `tools/` directory shipped a script that has nothing to do with the plugin.** The
+  awesome-list submission script is repository housekeeping; it moved to `contrib/`, which is
+  deliberately absent from `package.json#files`, so it no longer lands in anyone's install.
+
+- **The entry description was adjectives where it could have been claims.** Review point 1 checks
+  the description against the code, so "vision-native screenshots" was replaced by what can actually
+  be verified: 12 `computer_*` tools, `computer_screenshot` returning a real image plus an
+  image-to-screen pixel mapping, `expect_window` refusing input on a focus mismatch, and the Stop
+  button / `Ctrl+Alt+Esc` blocking calls until re-approval. `tarball:` and its `latest/download/`
+  form were confirmed against real entries already on the list.
+
 ## 0.3.16 (the fork relationship is stated where identity is read)
 
 The README had always opened with "An **unofficial fork** of computer-user", credited jing-hy, and

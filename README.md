@@ -73,6 +73,25 @@ Each of these was observed while actually driving Windows with the first build:
    `focused_window`, and `computer_click` returns `at` — the accessible name, type and class of
    whatever sat under the cursor.
 
+### Focus is checked *before* the input, not only after it
+
+Reporting where the text went is a post-mortem: by the time `focused_window` says "Microsoft Edge",
+the chord has already been delivered. That is not hypothetical — a `Ctrl+H` meant for Notepad landed
+in the browser this way, because focus drifted between two steps.
+
+So every input tool (`computer_type`, `computer_keypress`, `computer_click`, `computer_scroll`,
+`computer_drag`) takes an optional **`expect_window`**: a substring the foreground window title must
+contain. On a mismatch the tool **refuses without sending any input** and answers with
+`refused: true`, the `expected_window` it wanted, the `focused_window` it actually found, and a
+`hint` naming the fix. It is opt-in, so callers that omit it are unaffected.
+
+```jsonc
+// foreground is the browser, not Notepad → nothing is typed
+{ "text": "hello", "expect_window": "记事本" }
+// → { "chars": 0, "refused": true, "expected_window": "记事本",
+//     "focused_window": { "title": "... Microsoft? Edge", "pid": 281252 }, "hint": "..." }
+```
+
 ### The control indicator
 
 While the plugin holds control, a separate process draws a slowly pulsing gradient along all four
@@ -84,6 +103,11 @@ stop marker that the mode gate turns into a hard refusal of **every** `computer_
 cause, until the user re-approves with `/computer`. Only a deliberate user action writes that
 marker — an idle reap or a host shutdown leaves nothing behind, so the plugin can never mistake its
 own cleanup for a user stop.
+
+The chat-input switch tells the truth about that state: it treats a stop as outranking the mode, so
+after a button or hotkey stop it shows an amber **"stopped by you"** instead of the green "on" it
+used to show while every call was being refused. It re-reads the state every four seconds, so the
+stop appears without a page reload, and clicking it performs the re-approval.
 
 The indicator is deliberately a separate process with a heartbeat file: it keeps rendering and stays
 clickable even if the agent loop stalls, and it removes itself if the host dies.

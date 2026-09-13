@@ -69,6 +69,8 @@ window.__ModuleLoader__.load({
       ".__cu_switchOn{color:var(--dsw-alias-label-primary)}" +
       ".__cu_switchTrack{position:relative;width:30px;height:16px;border-radius:8px;background:var(--dsw-alias-border-l3);transition:background 160ms ease}" +
       ".__cu_switchOn .__cu_switchTrack{background:var(--dsw-alias-state-success-primary)}" +
+      ".__cu_switchStopped .__cu_switchTrack{background:#E0A33E}" +
+      ".__cu_switchStopped{color:#E0A33E}" +
       ".__cu_switchKnob{position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;transition:transform 160ms ease}" +
       ".__cu_switchOn .__cu_switchKnob{transform:translateX(14px)}";
     var tagId = "computer-user/main.css";
@@ -128,7 +130,9 @@ window.__ModuleLoader__.load({
       debug: "调试日志",
       switchOn: "电脑操控：已开启",
       switchOff: "电脑操控：已关闭",
+      switchStopped: "电脑操控：已被你停止",
       switchHint: "开启后 AI 可以直接操作你的电脑（授权静默完成，等同于 /computer）；关闭会立即停止操控并禁止后续操作。",
+      switchStoppedHint: "你刚刚按了指示器上的「停止控制」或 Ctrl+Alt+Esc，AI 已无法操控电脑。点一下这里即可重新授权。",
       switchUnavailable: "电脑操控：服务未就绪",
       save: "保存",
       reset: "恢复默认",
@@ -176,7 +180,9 @@ window.__ModuleLoader__.load({
       debug: "Debug logging",
       switchOn: "Computer use: on",
       switchOff: "Computer use: off",
+      switchStopped: "Computer use: stopped by you",
       switchHint: "On lets the AI drive your computer directly — approval is granted silently, exactly as /computer would. Off stops it immediately and blocks further control.",
+      switchStoppedHint: "You pressed Stop (or Ctrl+Alt+Esc) on the indicator, so the AI can no longer control this computer. Click here to grant control again.",
       switchUnavailable: "Computer use: service unavailable",
       save: "Save",
       reset: "Reset",
@@ -417,15 +423,28 @@ window.__ModuleLoader__.load({
 
       react.useEffect(function () {
         var alive = true;
-        fetch(CONTROL_API, { headers: { accept: "application/json" } })
-          .then(function (r) { return r.json(); })
-          .then(function (json) { if (alive) setState(json); })
-          .catch(function () { if (alive) setState({ enabled: false, unavailable: true }); });
-        return function () { alive = false; };
+        function load() {
+          fetch(CONTROL_API, { headers: { accept: "application/json" } })
+            .then(function (r) { return r.json(); })
+            .then(function (json) { if (alive) setState(json); })
+            .catch(function () { if (alive) setState({ enabled: false, unavailable: true }); });
+        }
+        load();
+        // A stop the user triggers on the indicator (button or Ctrl+Alt+Esc)
+        // happens entirely outside this component. Without re-reading, the switch
+        // keeps claiming "on" while every computer_* call is being refused.
+        var timer = setInterval(load, 4000);
+        return function () { alive = false; clearInterval(timer); };
       }, []);
 
       var unavailable = !!(state && state.unavailable);
       var enabled = !!(state && state.enabled);
+      // A stop outranks the mode: with mode=auto `enabled` stays true, but the
+      // mode gate refuses every call until the user re-approves. Treat that as
+      // "off" so the switch tells the truth AND so clicking it re-authorizes
+      // instead of silently disabling the mode.
+      var stopped = !!(state && state.stopped);
+      var on = enabled && !stopped;
 
       function onToggle() {
         if (busy || unavailable) return;
@@ -433,24 +452,27 @@ window.__ModuleLoader__.load({
         fetch(CONTROL_API, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ enabled: !enabled }),
+          body: JSON.stringify({ enabled: !on }),
         })
           .then(function (r) { return r.json(); })
           .then(function (json) { setState(json); setBusy(false); })
           .catch(function () { setBusy(false); });
       }
 
+      var label = unavailable ? T("switchUnavailable")
+        : (on ? T("switchOn") : (stopped ? T("switchStopped") : T("switchOff")));
+
       return h("button", {
         type: "button",
-        className: "__cu_switch" + (enabled ? " __cu_switchOn" : ""),
+        className: "__cu_switch" + (on ? " __cu_switchOn" : "") + (stopped ? " __cu_switchStopped" : ""),
         onClick: onToggle,
         disabled: busy || unavailable,
-        title: T("switchHint"),
-        "aria-pressed": enabled ? "true" : "false",
-        "aria-label": enabled ? T("switchOn") : T("switchOff"),
+        title: stopped ? T("switchStoppedHint") : T("switchHint"),
+        "aria-pressed": on ? "true" : "false",
+        "aria-label": label,
       },
         h("span", { className: "__cu_switchTrack" }, h("span", { className: "__cu_switchKnob" })),
-        h("span", null, unavailable ? T("switchUnavailable") : (enabled ? T("switchOn") : T("switchOff")))
+        h("span", null, label)
       );
     }
 

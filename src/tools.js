@@ -257,7 +257,59 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
   /** The focused-window summary, trimmed to what matters for verification. */
   function describeWindow(window) {
     if (!window) return null;
-    return { title: window.title, pid: window.pid, hwnd: window.hwnd, rect: window.rect };
+    // Assign only PRESENT fields, for the same reason as describeElement: a
+    // property whose value is `undefined` is not lossless JSON, and the harness
+    // discards the entire tool result over a single one.
+    const out = {};
+    if (window.title !== undefined) out.title = window.title;
+    if (window.pid !== undefined) out.pid = window.pid;
+    if (window.hwnd !== undefined) out.hwnd = window.hwnd;
+    if (Array.isArray(window.rect)) out.rect = window.rect;
+    return Object.keys(out).length > 0 ? out : null;
+  }
+
+  /** Shared `expect_window` parameter: an opt-in pre-flight focus assertion. */
+  const EXPECT_WINDOW = {
+    type: 'string',
+    description: 'Safety check: act only when the foreground window title contains this text '
+      + '(case-insensitive). On a mismatch the tool refuses WITHOUT sending any input, so a window '
+      + 'that stole focus cannot silently receive the keystrokes.',
+  };
+
+  /**
+   * Refuse focus-sensitive input when the foreground window is not the expected one.
+   *
+   * Input tools act on "wherever focus is at this instant", so a window that
+   * quietly takes focus between two steps redirects the keystrokes into the wrong
+   * application. Noticing that afterwards only explains the damage once it is
+   * done, so when the caller names the window it expects, check BEFORE acting.
+   *
+   * @param {unknown} expect - substring the foreground window title must contain.
+   * @returns {Promise<object|null>} refusal fields, or null when it is safe to act.
+   */
+  async function expectWindowGuard(expect, exec) {
+    const want = typeof expect === 'string' ? expect.trim() : '';
+    if (!want) return null;
+    let foreground = null;
+    try {
+      foreground = (await ctxPs({ action: 'foreground' }, exec)).window ?? null;
+    } catch {
+      foreground = null;
+    }
+    const title = String(foreground?.title ?? '');
+    if (title.toLowerCase().includes(want.toLowerCase())) return null;
+    return {
+      refused: true,
+      expected_window: want,
+      focused_window: {
+        title,
+        pid: Number(foreground?.pid ?? 0),
+        hwnd: Number(foreground?.hwnd ?? 0),
+      },
+      hint: `已拒绝发送输入：当前前景窗口「${title || '(无标题)'}」不含「${want}」。`
+        + '请先用 computer_activate_window 聚焦目标窗口（或 computer_list_windows 核对标题）后重试；'
+        + '确实要打到当前焦点就把 expect_window 去掉。',
+    };
   }
 
   // -- computer_screenshot ---------------------------------------------------
@@ -407,6 +459,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
       properties: {
         coordinate: { ...COORD, description: 'Relative to virtual-screen origin from computer_screenshot.virtual_offset.' },
         action: { type: 'string', enum: ['click', 'right_click', 'double_click'], description: 'Default click.' },
+        expect_window: EXPECT_WINDOW,
       },
       required: ['coordinate'],
     },
@@ -415,6 +468,8 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
     async execute(args, exec) {
       gate('computer_click');
       const point = [Math.round(Number(args.coordinate[0])), Math.round(Number(args.coordinate[1]))];
+      const refusal = await expectWindowGuard(args.expect_window, exec);
+      if (refusal) return { clicked: `[${point[0]},${point[1]}] — 未点击`, ...refusal };
       const cfg = getConfig() ?? {};
       let before = null;
       if (cfg.verify_actions !== false) {
@@ -447,16 +502,18 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
 
   const computerType = {
     name: 'computer_type',
-    description: [`Type arbitrary UTF-16 text (supports Chinese) at the current focus. ${HEAD}`, 'Parameters: text (required string), send_enter (optional bool — press Enter after typing).', 'Input uses SendInput KEYEVENTF_UNICODE, so any character, including CJK, is entered reliably.' ],
+    description: [`Type arbitrary UTF-16 text (supports Chinese) at the current focus. ${HEAD}`, 'Parameters: text (required string), send_enter (optional bool — press Enter after typing), expect_window (optional string — refuse unless the foreground window title contains it).', 'Input uses SendInput KEYEVENTF_UNICODE, so any character, including CJK, is entered reliably.' ],
     parameters: {
       type: 'object', additionalProperties: true,
-      properties: { text: { type: 'string' }, send_enter: { type: 'boolean' } },
+      properties: { text: { type: 'string' }, send_enter: { type: 'boolean' }, expect_window: EXPECT_WINDOW },
       required: ['text'],
     },
     output: textOut({ required: ['chars'] }),
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       gate('computer_type');
+      const refusal = await expectWindowGuard(args.expect_window, exec);
+      if (refusal) return { chars: 0, ...refusal };
       const cfg = getConfig();
       const res = await runPs('input.ps1', {
         action: 'type', text: String(args.text), sendEnter: !!args.send_enter,
@@ -474,16 +531,18 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
 
   const computerKeypress = {
     name: 'computer_keypress',
-    description: [`Send a key chord (e.g. ["ctrl","c"], ["alt","tab"]). ${HEAD}`, 'Parameters: keys (required array of key names: ctrl/control, shift, alt, super/win/cmd, enter, tab, esc, space, backspace, delete, home, end, pageup, pagedown, up/down/left/right, f1..f24, single letters/digits, or single punctuation chars).'],
+    description: [`Send a key chord (e.g. ["ctrl","c"], ["alt","tab"]). ${HEAD}`, 'Parameters: keys (required array of key names: ctrl/control, shift, alt, super/win/cmd, enter, tab, esc, space, backspace, delete, home, end, pageup, pagedown, up/down/left/right, f1..f24, single letters/digits, or single punctuation chars), expect_window (optional string — refuse unless the foreground window title contains it; use this for chords like ctrl+h or ctrl+s that go to whatever has focus).'],
     parameters: {
       type: 'object', additionalProperties: true,
-      properties: { keys: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Key names pressed together (modifiers first).' } },
+      properties: { keys: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Key names pressed together (modifiers first).' }, expect_window: EXPECT_WINDOW },
       required: ['keys'],
     },
     output: textOut({ required: ['keys'] }),
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       gate('computer_keypress');
+      const refusal = await expectWindowGuard(args.expect_window, exec);
+      if (refusal) return { keys: '', ...refusal };
       const res = await runPs('input.ps1', { action: 'keypress', keys: args.keys }, { signal: exec?.signal });
       const probe = await probeContext(exec);
       const out = { keys: res.keys };
@@ -502,6 +561,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         coordinate: COORD,
         direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] },
         clicks: { type: 'number' },
+        expect_window: EXPECT_WINDOW,
       },
       required: ['coordinate'],
     },
@@ -509,6 +569,8 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       gate('computer_scroll');
+      const refusal = await expectWindowGuard(args.expect_window, exec);
+      if (refusal) return { scrolled: '未滚动', ...refusal };
       const cfg = getConfig();
       const clicks = typeof args.clicks === 'number' && args.clicks > 0 ? args.clicks : (cfg.scroll_units || 1);
       await runPs('input.ps1', { action: 'scroll', coordinate: args.coordinate, direction: args.direction ?? 'down', clicks }, { signal: exec?.signal });
@@ -525,6 +587,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         start_coordinate: COORD,
         end_coordinate: COORD,
         hold_keys: { type: 'array', items: { type: 'string' } },
+        expect_window: EXPECT_WINDOW,
       },
       required: ['start_coordinate', 'end_coordinate'],
     },
@@ -532,6 +595,11 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       gate('computer_drag');
+      const refusal = await expectWindowGuard(args.expect_window, exec);
+      if (refusal) {
+        const from = Array.isArray(args.start_coordinate) ? args.start_coordinate.join(',') : '';
+        return { from: `[${from}] 未拖拽`, to: '', ...refusal };
+      }
       const res = await runPs('input.ps1', { action: 'drag', from: args.start_coordinate, to: args.end_coordinate, holdKeys: args.hold_keys ?? [] }, { signal: exec?.signal });
       return { from: res.from, to: res.to };
     },

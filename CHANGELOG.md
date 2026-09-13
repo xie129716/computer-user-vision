@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.3.9 (focus guard + an honest control switch)
+
+Both defects below were found by driving the build through a scripted acceptance run rather than by
+reading the code — the first from watching the UI, the second from an accident.
+
+- **The control switch claimed control was on while every call was being refused.** After a Stop
+  (button or `Ctrl+Alt+Esc`) the mode is still `auto`, so `enabled` stays true — and the switch read
+  only that field, ignoring the `stopped` label the server was already returning. It rendered the
+  green "on" state, and clicking it sent `!enabled`, which **turned the mode off** instead of
+  clearing the stop. A page reload did not help, because the mount-time read saw the same `enabled`.
+  A stop now outranks the mode: `on = enabled && !stopped`, the switch renders an amber
+  "stopped by you" with a matching tooltip, clicking re-approves, and it re-reads the route every
+  four seconds so an out-of-band stop shows up without a reload.
+
+- **`expect_window`: refuse focus-sensitive input instead of explaining it afterwards.** The tools
+  reported `focused_window` only *after* acting, which is a post-mortem — during this very
+  acceptance run a `Ctrl+H` meant for Notepad went to the browser, because focus had drifted between
+  two steps. `computer_type`, `computer_keypress`, `computer_click`, `computer_scroll` and
+  `computer_drag` now take an optional `expect_window` substring; on a mismatch they refuse
+  **without sending any input** and return `refused`, `expected_window`, `focused_window` and a
+  `hint`. Verified both ways: a bogus name yields `chars: 0` and the intended text never reaches the
+  document, while a real match proceeds normally.
+
+- **Lossless-JSON hardening.** `describeWindow` assigned `title`/`pid`/`hwnd`/`rect`
+  unconditionally, so any absent field became an `undefined` property — which is not lossless JSON
+  and makes the harness discard the *entire* tool result. It now assigns only present fields, the
+  same rule `describeElement` already followed.
+
+Acceptance evidence for this release: the Stop button wrote `button` and the hotkey wrote `hotkey`
+to the stop marker with the indicator exiting cleanly; the gate refused the next call and named the
+cause; the walk-back switch showed the amber stopped state; a Notepad round-trip
+(type → `Ctrl+A`/`Ctrl+C` → clear → `Ctrl+V`) restored exactly the copied text; `computer_scroll`
+advanced 5 notches = exactly 15 lines and returned to the identical line; and a two-line
+`computer_drag` selection landed its endpoints on the predicted rows to the character.
+
 ## 0.3.6+vision.3 (approval persistence)
 
 `/computer` was granted into a module-level Set. It did survive across turns

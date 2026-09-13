@@ -1,25 +1,27 @@
 # computer-user / overlay.ps1 - the "an agent is driving your computer" indicator.
 #
-# Shows three things while the plugin holds control of the desktop:
-#   1. a slowly pulsing gradient along all four screen edges
-#   2. a coloured halo that tracks the mouse cursor (the OS cursor bitmap itself
-#      cannot be recoloured, so the halo is what actually changes colour)
-#   3. a top banner naming the controller, with a Cancel button and a global
+# Shows, while the plugin holds control of the desktop:
+#   1. a slowly pulsing gradient frame on all four screen edges
+#   2. a halo that follows the mouse and changes SHAPE with the cursor
+#      (the OS cursor bitmap cannot be recoloured, so the halo is the thing
+#      that visibly marks it)
+#   3. a top banner naming the controller, with a Stop button and a global
 #      hotkey (default Ctrl+Alt+Esc) so the user can always take the wheel back
 #
-# It is a separate process from the DSH host on purpose: the indicator must keep
-# rendering and stay clickable even if the agent loop stalls, and it must vanish
-# on its own if the host dies. Liveness is therefore driven by a heartbeat file
-# the host refreshes on every tool call - no heartbeat for `idleSeconds` and the
-# overlay exits.
+# Three details are load-bearing:
 #
-# Every window is WS_EX_NOACTIVATE so it never steals focus from the app being
-# driven, and every decorative window is WS_EX_TRANSPARENT so it never swallows
-# a click (the screen-edge strips would otherwise eat taskbar clicks).
+#   * The frame is four NON-OVERLAPPING strips. Overlapping strips double-blend
+#     at the corners, which makes the frame look crooked and uneven.
+#   * WS_EX_LAYERED is added to windows that already exist, so every such window
+#     gets a SetWindowPos(SWP_FRAMECHANGED) afterwards. Without it
+#     SetLayeredWindowAttributes silently fails and the pulse is invisible.
+#   * While the AI is capturing the screen the indicator must not exist in the
+#     picture, so the host drops a pause file and every window hides until it is
+#     removed. The indicator is for the human watching, not for the model.
 #
 # Input: -Json <base64(UTF8 JSON)>
-#   { heartbeatFile, stopFile, label, hint, accentA, accentB, thickness,
-#     idleSeconds, hotkeyMods, hotkeyVk }
+#   { heartbeatFile, stopFile, pauseFile, label, stopLabel, hint, accentA,
+#     accentB, thickness, idleSeconds, hotkeyMods, hotkeyVk }
 # ASCII-only source: Windows PowerShell 5.1 decodes a BOM-less .ps1 as ANSI, so
 # every user-visible string arrives through the UTF-8 base64 payload instead.
 param([string]$Json = "")
@@ -31,18 +33,19 @@ if ([string]::IsNullOrWhiteSpace($Json)) { Write-Output '{"ok":false,"error":"mi
 try {
   $raw = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Json))
   $cfg = $raw | ConvertFrom-Json
-} catch { Write-Output ('{"ok":false,"error":"bad json"}'); exit 2 }
+} catch { Write-Output '{"ok":false,"error":"bad json"}'; exit 2 }
 
 $heartbeat = [string]$cfg.heartbeatFile
 $stopFile = [string]$cfg.stopFile
+$pauseFile = [string]$cfg.pauseFile
 $label = if ($cfg.label) { [string]$cfg.label } else { "An AI agent is controlling this computer" }
 $hint = if ($cfg.hint) { [string]$cfg.hint } else { "Ctrl+Alt+Esc" }
 $accentA = if ($cfg.accentA) { [string]$cfg.accentA } else { "#4D6BFE" }
 $accentB = if ($cfg.accentB) { [string]$cfg.accentB } else { "#22D3EE" }
 $thickness = if ($cfg.thickness) { [int]$cfg.thickness } else { 7 }
 $idleSeconds = if ($cfg.idleSeconds) { [int]$cfg.idleSeconds } else { 25 }
-$hotkeyMods = if ($null -ne $cfg.hotkeyMods) { [int]$cfg.hotkeyMods } else { 3 }   # MOD_ALT|MOD_CONTROL
-$hotkeyVk = if ($null -ne $cfg.hotkeyVk) { [int]$cfg.hotkeyVk } else { 27 }        # VK_ESCAPE
+$hotkeyMods = if ($null -ne $cfg.hotkeyMods) { [int]$cfg.hotkeyMods } else { 3 }
+$hotkeyVk = if ($null -ne $cfg.hotkeyVk) { [int]$cfg.hotkeyVk } else { 27 }
 
 function HexToColor([string]$hex) {
   $h = $hex.TrimStart('#')
@@ -64,11 +67,16 @@ using System;
 using System.Runtime.InteropServices;
 public class CUOverlayNative {
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
-  [DllImport("user32.dll", SetLastError = true)] public static extern bool RegisterHotKey(IntPtr hWnd, int id, int mods, int vk);
-  [DllImport("user32.dll", SetLastError = true)] public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+  [DllImport("user32.dll", SetLastError = true)] public static extern bool RegisterHotKey(IntPtr h, int id, int mods, int vk);
+  [DllImport("user32.dll", SetLastError = true)] public static extern bool UnregisterHotKey(IntPtr h, int id);
   [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int i);
   [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr h, int i, int v);
   [DllImport("user32.dll")] public static extern bool SetLayeredWindowAttributes(IntPtr h, uint key, byte alpha, uint flags);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+  [DllImport("user32.dll")] public static extern IntPtr LoadCursor(IntPtr inst, int id);
+  [DllImport("user32.dll")] public static extern bool GetCursorInfo(ref CURSORINFO ci);
+
   public const int GWL_EXSTYLE = -20;
   public const int WS_EX_NOACTIVATE = 0x08000000;
   public const int WS_EX_TOOLWINDOW = 0x00000080;
@@ -76,20 +84,48 @@ public class CUOverlayNative {
   public const int WS_EX_LAYERED = 0x00080000;
   public const uint LWA_ALPHA = 0x2;
   public const uint LWA_COLORKEY = 0x1;
+  public const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOZORDER = 0x4,
+                    SWP_NOACTIVATE = 0x10, SWP_FRAMECHANGED = 0x20;
+  public const int SW_HIDE = 0, SW_SHOWNOACTIVATE = 4;
+
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int x, y; }
+  [StructLayout(LayoutKind.Sequential)]
+  public struct CURSORINFO { public int cbSize; public int flags; public IntPtr hCursor; public POINT ptScreenPos; }
+
+  /** Make a window decorative: never focused, never a click target when asked. */
   public static void NoActivate(IntPtr h, bool clickThrough) {
     int ex = GetWindowLong(h, GWL_EXSTYLE);
     ex |= WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_LAYERED;
     if (clickThrough) ex |= WS_EX_TRANSPARENT;
     SetWindowLong(h, GWL_EXSTYLE, ex);
+    // WS_EX_LAYERED added to an EXISTING window only takes effect after a frame
+    // change. Skip this and SetLayeredWindowAttributes fails silently, which is
+    // exactly how the breathing animation disappeared before.
+    SetWindowPos(h, IntPtr.Zero, 0, 0, 0, 0,
+      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
   }
   public static void SetAlpha(IntPtr h, byte a) { SetLayeredWindowAttributes(h, 0, a, LWA_ALPHA); }
   public static void SetKeyAlpha(IntPtr h, uint key, byte a) { SetLayeredWindowAttributes(h, key, a, LWA_ALPHA | LWA_COLORKEY); }
+  public static void Hide(IntPtr h) { ShowWindow(h, SW_HIDE); }
+  public static void ShowNoActivate(IntPtr h) { ShowWindow(h, SW_SHOWNOACTIVATE); }
+
+  /** The IDC_* id matching the live cursor, or 0 when the app uses its own art. */
+  public static int CursorShape() {
+    var ci = new CURSORINFO();
+    ci.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
+    if (!GetCursorInfo(ref ci)) return 0;
+    int[] ids = { 32512, 32513, 32514, 32515, 32516, 32642, 32643, 32644, 32645, 32646, 32648, 32649, 32650, 32651 };
+    foreach (int id in ids) {
+      IntPtr h = LoadCursor(IntPtr.Zero, id);
+      if (h != IntPtr.Zero && h == ci.hCursor) return id;
+    }
+    return 0;
+  }
 }
 '@
 Add-Type -TypeDefinition $native -ErrorAction Stop
 [CUOverlayNative]::SetProcessDPIAware() | Out-Null
 
-# A message filter is how a hotkey press reaches managed code without a subclass.
 $filterSrc = @'
 using System;
 using System.Windows.Forms;
@@ -107,6 +143,10 @@ $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
 $stopped = $false
 $forms = New-Object System.Collections.ArrayList
 
+# --- the frame -------------------------------------------------------------
+# Four strips that TILE the border without overlapping: the vertical strips are
+# inset by the thickness so each corner belongs to exactly one window. Overlap
+# would double-blend there and make the frame look crooked.
 function New-Strip([int]$x, [int]$y, [int]$w, [int]$h, [bool]$horizontal) {
   $f = New-Object System.Windows.Forms.Form
   $f.FormBorderStyle = 'None'
@@ -127,14 +167,102 @@ function New-Strip([int]$x, [int]$y, [int]$w, [int]$h, [bool]$horizontal) {
   return $f
 }
 
-# Four click-through edge strips that together read as one glowing frame.
 $top = New-Strip $vs.X $vs.Y $vs.Width $thickness $true
 $bottom = New-Strip $vs.X ($vs.Y + $vs.Height - $thickness) $vs.Width $thickness $true
-$left = New-Strip $vs.X $vs.Y $thickness $vs.Height $false
-$right = New-Strip ($vs.X + $vs.Width - $thickness) $vs.Y $thickness $vs.Height $false
+$left = New-Strip $vs.X ($vs.Y + $thickness) $thickness ($vs.Height - 2 * $thickness) $false
+$right = New-Strip ($vs.X + $vs.Width - $thickness) ($vs.Y + $thickness) $thickness ($vs.Height - 2 * $thickness) $false
 
-# Cursor halo: a small colour-keyed window that follows the pointer.
-$haloSize = 92
+# --- the cursor halo -------------------------------------------------------
+$haloSize = 96
+
+function New-DimColor([System.Drawing.Color]$c, [double]$dim) {
+  return [System.Drawing.Color]::FromArgb(255, [int]($c.R * $dim), [int]($c.G * $dim), [int]($c.B * $dim))
+}
+
+# A stadium (rounded capsule) outline: two straight sides plus two round caps.
+# Rotating the graphics context is what lets one routine draw the horizontal,
+# the vertical and both diagonal resize shapes.
+function Draw-Stadium($g, $pen, [double]$cx, [double]$cy, [double]$w, [double]$h, [double]$angle) {
+  $state = $g.Save()
+  try {
+    $g.TranslateTransform([single]$cx, [single]$cy)
+    if ($angle -ne 0) { $g.RotateTransform([single]$angle) }
+    if ($w -ge $h) {
+      $r = $h / 2
+      $g.DrawLine($pen, [single](-$w / 2 + $r), [single](-$h / 2), [single]($w / 2 - $r), [single](-$h / 2))
+      $g.DrawLine($pen, [single](-$w / 2 + $r), [single]($h / 2), [single]($w / 2 - $r), [single]($h / 2))
+      $g.DrawArc($pen, [single](-$w / 2), [single](-$h / 2), [single]$h, [single]$h, 90, 180)
+      $g.DrawArc($pen, [single]($w / 2 - $h), [single](-$h / 2), [single]$h, [single]$h, 270, 180)
+    } else {
+      $r = $w / 2
+      $g.DrawLine($pen, [single](-$w / 2), [single](-$h / 2 + $r), [single](-$w / 2), [single]($h / 2 - $r))
+      $g.DrawLine($pen, [single]($w / 2), [single](-$h / 2 + $r), [single]($w / 2), [single]($h / 2 - $r))
+      $g.DrawArc($pen, [single](-$w / 2), [single](-$h / 2), [single]$w, [single]$w, 180, 180)
+      $g.DrawArc($pen, [single](-$w / 2), [single]($h / 2 - $w), [single]$w, [single]$w, 0, 180)
+    }
+  } finally { $g.Restore($state) }
+}
+
+# IDC_* ids reported by the native helper.
+$CUR_IBEAM = 32513; $CUR_CROSS = 32515
+$CUR_SIZENWSE = 32642; $CUR_SIZENESW = 32643; $CUR_SIZEWE = 32644; $CUR_SIZENS = 32645
+$CUR_SIZEALL = 32646; $CUR_NO = 32648
+
+function Draw-HaloShape($g, [int]$cursorId, [System.Drawing.Color]$bright, [System.Drawing.Color]$dim, [double]$scale) {
+  $mid = $haloSize / 2
+  $penBright = New-Object System.Drawing.Pen($bright, 1.8)
+  $penDim = New-Object System.Drawing.Pen($dim, 1.4)
+  try {
+    switch ($cursorId) {
+      $CUR_IBEAM {
+        Draw-Stadium $g $penBright $mid $mid (14 * $scale) (40 * $scale) 0
+        Draw-Stadium $g $penDim $mid $mid (24 * $scale) (52 * $scale) 0
+      }
+      $CUR_SIZENS {
+        Draw-Stadium $g $penBright $mid $mid (16 * $scale) (42 * $scale) 0
+        Draw-Stadium $g $penDim $mid $mid (26 * $scale) (54 * $scale) 0
+      }
+      $CUR_SIZEWE {
+        Draw-Stadium $g $penBright $mid $mid (42 * $scale) (16 * $scale) 0
+        Draw-Stadium $g $penDim $mid $mid (54 * $scale) (26 * $scale) 0
+      }
+      $CUR_SIZENWSE {
+        Draw-Stadium $g $penBright $mid $mid (42 * $scale) (16 * $scale) 45
+        Draw-Stadium $g $penDim $mid $mid (54 * $scale) (26 * $scale) 45
+      }
+      $CUR_SIZENESW {
+        Draw-Stadium $g $penBright $mid $mid (42 * $scale) (16 * $scale) -45
+        Draw-Stadium $g $penDim $mid $mid (54 * $scale) (26 * $scale) -45
+      }
+      $CUR_SIZEALL {
+        Draw-Stadium $g $penBright $mid $mid (40 * $scale) (40 * $scale) 0
+        Draw-Stadium $g $penBright $mid $mid (40 * $scale) (40 * $scale) 45
+        Draw-Stadium $g $penDim $mid $mid (54 * $scale) (54 * $scale) 0
+      }
+      $CUR_CROSS {
+        $r = 22 * $scale
+        $g.DrawLine($penBright, [single]($mid - $r), [single]$mid, [single]($mid + $r), [single]$mid)
+        $g.DrawLine($penBright, [single]$mid, [single]($mid - $r), [single]$mid, [single]($mid + $r))
+        $g.DrawEllipse($penDim, [single]($mid - $r), [single]($mid - $r), [single](2 * $r), [single](2 * $r))
+      }
+      $CUR_NO {
+        $r = 20 * $scale
+        $g.DrawEllipse($penBright, [single]($mid - $r), [single]($mid - $r), [single](2 * $r), [single](2 * $r))
+        $d = $r * 0.72
+        $g.DrawLine($penBright, [single]($mid - $d), [single]($mid + $d), [single]($mid + $d), [single]($mid - $d))
+      }
+      default {
+        # Arrow, text-hand, busy, and any app-drawn cursor: a ring reads as
+        # "this pointer is being driven" without pretending to be a shape.
+        $r = 15 * $scale
+        $g.DrawEllipse($penBright, [single]($mid - $r), [single]($mid - $r), [single](2 * $r), [single](2 * $r))
+        $r2 = 24 * $scale
+        $g.DrawEllipse($penDim, [single]($mid - $r2), [single]($mid - $r2), [single](2 * $r2), [single](2 * $r2))
+      }
+    }
+  } finally { $penBright.Dispose(); $penDim.Dispose() }
+}
+
 $halo = New-Object System.Windows.Forms.Form
 $halo.FormBorderStyle = 'None'
 $halo.ShowInTaskbar = $false
@@ -145,29 +273,16 @@ $halo.TransparencyKey = [System.Drawing.Color]::Magenta
 $halo.SetBounds(0, 0, $haloSize, $haloSize)
 $halo.add_Paint({
   param($sender, $e)
-  # TransparencyKey cannot express soft alpha: a semi-transparent pixel COMPOSITES
-  # with the key colour instead of vanishing, so alpha-graded glow rings came out
-  # as pink residue that the key never removed. Grade the ring BRIGHTNESS with
-  # fully opaque colours instead, and keep edges hard so anti-aliasing cannot
-  # fringe against the key colour either.
+  # TransparencyKey cannot express soft alpha - a semi-transparent pixel
+  # composites with the key colour instead of vanishing, which is what once
+  # turned these rings pink. Keep every stroke fully opaque.
   $e.Graphics.SmoothingMode = 'None'
   $c = $script:haloColor
-  $mid = $haloSize / 2
-  for ($i = 4; $i -ge 1; $i--) {
-    $outerness = ($i - 1) / 3.0                    # 1 = outermost, 0 = innermost
-    $dim = 0.30 + 0.70 * (1 - $outerness)
-    $col = [System.Drawing.Color]::FromArgb(
-      255,
-      [int]($c.R * $dim), [int]($c.G * $dim), [int]($c.B * $dim))
-    $pen = New-Object System.Drawing.Pen($col, 2.0)
-    try { $e.Graphics.DrawEllipse($pen, $mid - ($i * 9), $mid - ($i * 9), $i * 18, $i * 18) } finally { $pen.Dispose() }
-  }
-  $core = New-Object System.Drawing.Pen($c, 2.2)
-  try { $e.Graphics.DrawEllipse($core, $mid - 8, $mid - 8, 16, 16) } finally { $core.Dispose() }
+  Draw-HaloShape $e.Graphics $script:cursorShape (New-DimColor $c 1.0) (New-DimColor $c 0.5) 1.0
 })
 [void]$forms.Add($halo)
 
-# Banner: the only interactive window.
+# --- the banner (the only interactive window) ------------------------------
 $banner = New-Object System.Windows.Forms.Form
 $banner.FormBorderStyle = 'None'
 $banner.ShowInTaskbar = $false
@@ -241,15 +356,24 @@ $cancel.add_Click({ Stop-Overlay 'button' })
 $hotkeyFilter = New-Object CUHotkeyFilter
 $hotkeyFilter.add_Fired({ Stop-Overlay 'hotkey' })
 [System.Windows.Forms.Application]::AddMessageFilter($hotkeyFilter)
-$hotkeyOk = $false
 
 $script:colA = $colA
 $script:colB = $colB
 $script:haloColor = $colA
-$phase = 0.0
+$script:haloSize = $haloSize
+$script:cursorShape = 0
+$script:topStrip = $top
+$script:bottomStrip = $bottom
+$script:leftStrip = $left
+$script:rightStrip = $right
+$script:haloForm = $halo
+$script:bannerForm = $banner
+$script:allForms = @($top, $bottom, $left, $right, $halo, $banner)
+$script:hidden = $false
+$script:phase = 0.0
 
 $timer = New-Object System.Windows.Forms.Timer
-$timer.Interval = 60
+$timer.Interval = 50
 $timer.add_Tick({
   # stop conditions -------------------------------------------------------
   if (Test-Path -LiteralPath $stopFile) { Stop-Overlay 'external'; return }
@@ -258,19 +382,31 @@ $timer.add_Tick({
     if ($age -gt $idleSeconds) { Stop-Overlay 'idle'; return }
   }
 
-  # slow pulse ------------------------------------------------------------
-  $script:phase = ($script:phase + 0.035) % (2 * [Math]::PI)
-  $pulse = 0.5 + 0.5 * [Math]::Sin($script:phase * 2)
-  $alpha = [byte](70 + 110 * $pulse)
-
-  # the decorative windows must exist before their handles are styled.
-  # The halo is colour-keyed as well as alpha-blended, so it must never go
-  # through plain SetAlpha - that would drop the key and show a magenta square.
-  foreach ($f in @($script:topStrip, $script:bottomStrip, $script:leftStrip, $script:rightStrip)) {
-    if ($f -and $f.IsHandleCreated) { [CUOverlayNative]::SetAlpha($f.Handle, $alpha) }
+  # hide while the AI captures the screen ---------------------------------
+  $shouldHide = (-not [string]::IsNullOrWhiteSpace($pauseFile)) -and (Test-Path -LiteralPath $pauseFile)
+  if ($shouldHide -ne $script:hidden) {
+    foreach ($f in $script:allForms) {
+      if (-not $f.IsHandleCreated) { continue }
+      if ($shouldHide) { [CUOverlayNative]::Hide($f.Handle) }
+      else { [CUOverlayNative]::ShowNoActivate($f.Handle) }
+    }
+    $script:hidden = $shouldHide
   }
-  if ($script:haloForm -and $script:haloForm.IsHandleCreated) {
-    [CUOverlayNative]::SetKeyAlpha($script:haloForm.Handle, [uint32]0x00FF00FF, $alpha)
+
+  # slow pulse ------------------------------------------------------------
+  # ~50ms ticks with this phase step give a full breath every ~5 seconds.
+  $script:phase = ($script:phase + 0.042) % (2 * [Math]::PI)
+  $pulse = 0.5 + 0.5 * [Math]::Sin($script:phase)
+  $alpha = [byte](45 + 165 * $pulse)
+  if (-not $script:hidden) {
+    foreach ($f in @($script:topStrip, $script:bottomStrip, $script:leftStrip, $script:rightStrip)) {
+      if ($f -and $f.IsHandleCreated) { [CUOverlayNative]::SetAlpha($f.Handle, $alpha) }
+    }
+    # The halo is colour-keyed as well as alpha-blended, so it must never go
+    # through plain SetAlpha - that would drop the key and show a magenta square.
+    if ($script:haloForm -and $script:haloForm.IsHandleCreated) {
+      [CUOverlayNative]::SetKeyAlpha($script:haloForm.Handle, [uint32]0x00FF00FF, [byte](120 + 135 * $pulse))
+    }
   }
 
   # cursor halo -----------------------------------------------------------
@@ -278,26 +414,25 @@ $timer.add_Tick({
   $script:haloForm.SetBounds(
     [int]($p.X - $script:haloSize / 2),
     [int]($p.Y - $script:haloSize / 2),
-    $script:haloSize, $script:haloSize)
+    $haloSize, $haloSize)
+
+  $shape = [CUOverlayNative]::CursorShape()
   $mix = 0.5 + 0.5 * [Math]::Sin($script:phase)
-  $script:haloColor = [System.Drawing.Color]::FromArgb(
+  $newColor = [System.Drawing.Color]::FromArgb(
     255,
     [int]($script:colA.R + ($script:colB.R - $script:colA.R) * $mix),
     [int]($script:colA.G + ($script:colB.G - $script:colA.G) * $mix),
     [int]($script:colA.B + ($script:colB.B - $script:colA.B) * $mix))
-  $script:haloForm.Invalidate()
+  if ($shape -ne $script:cursorShape -or $newColor.ToArgb() -ne $script:haloColor.ToArgb()) {
+    $script:cursorShape = $shape
+    $script:haloColor = $newColor
+    $script:haloForm.Invalidate()
+  }
 
-  # keep the banner on top of fullscreen apps ------------------------------
-  if ($script:bannerForm -and $script:bannerForm.IsHandleCreated) { $script:bannerForm.TopMost = $true }
+  if ($script:bannerForm -and $script:bannerForm.IsHandleCreated -and -not $script:hidden) {
+    $script:bannerForm.TopMost = $true
+  }
 })
-
-$script:topStrip = $top
-$script:bottomStrip = $bottom
-$script:leftStrip = $left
-$script:rightStrip = $right
-$script:haloForm = $halo
-$script:bannerForm = $banner
-$script:haloSize = $haloSize
 
 $banner.add_Shown({
   foreach ($pair in @(
@@ -307,13 +442,15 @@ $banner.add_Shown({
     if ($pair.f -and $pair.f.IsHandleCreated) { [CUOverlayNative]::NoActivate($pair.f.Handle, $pair.ct) }
   }
   if ($script:haloForm.IsHandleCreated) {
-    [CUOverlayNative]::SetKeyAlpha($script:haloForm.Handle, [uint32]0x00FF00FF, 255)
+    [CUOverlayNative]::SetKeyAlpha($script:haloForm.Handle, [uint32]0x00FF00FF, 235)
   }
-  $hotkeyOk = [CUOverlayNative]::RegisterHotKey($script:bannerForm.Handle, 1, $hotkeyMods, $hotkeyVk)
-  $script:timer.Start()
+  foreach ($f in @($script:topStrip, $script:bottomStrip, $script:leftStrip, $script:rightStrip)) {
+    if ($f.IsHandleCreated) { [CUOverlayNative]::SetAlpha($f.Handle, 140) }
+  }
+  [CUOverlayNative]::RegisterHotKey($script:bannerForm.Handle, 1, $hotkeyMods, $hotkeyVk) | Out-Null
+  $timer.Start()
 })
 
-# Show every window without activating any of them.
 foreach ($f in @($top, $bottom, $left, $right, $halo)) { $f.Show() }
 $timer.Start()
 
@@ -324,6 +461,5 @@ try {
   try { [CUOverlayNative]::UnregisterHotKey($banner.Handle, 1) | Out-Null } catch { }
   foreach ($f in $forms) { try { $f.Close(); $f.Dispose() } catch { } }
   [System.Windows.Forms.Application]::RemoveMessageFilter($hotkeyFilter)
-  # A user stop leaves the marker for the host; an exit without one is a no-op.
   if (-not $script:stopped) { Stop-Overlay 'closed' }
 }

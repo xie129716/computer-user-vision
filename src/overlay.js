@@ -31,6 +31,7 @@ export function createOverlayController({ getConfig, logger } = {}) {
   const dir = join(tmpdir(), 'computer-user');
   const heartbeatPath = join(dir, 'overlay-heartbeat');
   const stopPath = join(dir, 'overlay-stop');
+  const pausePath = join(dir, 'overlay-pause');
 
   let child = null;
   let lastSpawnFailure = null;
@@ -38,6 +39,31 @@ export function createOverlayController({ getConfig, logger } = {}) {
   const warn = (message) => logger?.warn?.(`[computer-user] overlay: ${message}`);
 
   const enabled = () => (getConfig?.() ?? {}).overlay !== false;
+
+  /** Whether the indicator process is currently up. */
+  const isRunning = () => child !== null && child.exitCode === null;
+
+  /**
+   * Hide the indicator before a screen capture.
+   *
+   * The indicator exists for the human watching, not for the model: a frame
+   * drawn over the screen edges would be baked into every screenshot the model
+   * reasons about, covering real content. The overlay hides within one of its
+   * 50ms ticks, so this waits briefly before letting the capture proceed.
+   *
+   * @returns {Promise<boolean>} true when a pause was applied and must be undone.
+   */
+  async function pauseForCapture() {
+    if (!isRunning()) return false;
+    try { writeFileSync(pausePath, '1', 'utf8'); } catch { return false; }
+    await new Promise((resolve) => { setTimeout(resolve, 140); });
+    return true;
+  }
+
+  /** Bring the indicator back after a capture (safe to call unconditionally). */
+  function resumeAfterCapture() {
+    try { rmSync(pausePath, { force: true }); } catch { /* best effort */ }
+  }
 
   /** The reason a user stopped control, or null when nothing stopped it. */
   function stopReason() {
@@ -76,12 +102,14 @@ export function createOverlayController({ getConfig, logger } = {}) {
     try {
       mkdirSync(dir, { recursive: true });
       rmSync(stopPath, { force: true });
+      rmSync(pausePath, { force: true });
       touch();
 
       const cfg = getConfig?.() ?? {};
       const payload = {
         heartbeatFile: heartbeatPath,
         stopFile: stopPath,
+        pauseFile: pausePath,
         label: (cfg.overlay_label ?? '').trim() || 'DeepSeek 正在控制电脑',
         stopLabel: (cfg.overlay_stop_label ?? '').trim() || '停止控制',
         hint: 'Ctrl+Alt+Esc',
@@ -137,6 +165,7 @@ export function createOverlayController({ getConfig, logger } = {}) {
     } catch { /* already gone */ }
     child = null;
     try { rmSync(heartbeatPath, { force: true }); } catch { /* best effort */ }
+    try { rmSync(pausePath, { force: true }); } catch { /* best effort */ }
     if (purge) clearStop();
   }
 
@@ -145,6 +174,8 @@ export function createOverlayController({ getConfig, logger } = {}) {
     ensure,
     touch,
     shutdown,
+    pauseForCapture,
+    resumeAfterCapture,
     stopReason,
     stopLabel,
     clearStop,

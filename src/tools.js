@@ -74,11 +74,24 @@ const MODES = ['disabled', 'readonly', 'manual', 'auto'];
 function modeGate(cfg, toolName, approvedSessions, sessionId, controlState) {
   // A user stop outranks every mode: the overlay's Cancel button and its global
   // hotkey both land here, and nothing runs again until the user re-approves.
+  // The message deliberately carries INTENT, not just a refusal - "blocked"
+  // alone invites the model to hunt for a workaround instead of handing control
+  // back, which is the opposite of what the user asked for by pressing stop.
   const stopped = controlState?.stopLabel?.();
   if (stopped) {
     throw new Error(
-      `用户已停止电脑控制（${stopped}）。所有 computer_* 工具在重新授权前保持拒绝；` +
-        '请告知用户已停止，等待其在对话框输入 /computer 重新授权后再继续。'
+      `用户已在电脑操控过程中停止（${stopped}）。\n` +
+        '这通常意味着下面某一种情况（不要猜测是哪一种，用一句话向用户确认即可）：\n' +
+        '  · 用户认为本轮操作有风险，或对正在发生的事不放心；\n' +
+        '  · 用户本次不希望由 AI 操控电脑，想自己接手；\n' +
+        '  · 用户想换一种方式完成（例如改用命令行 / API / 文件操作，而不是 GUI 操控）。\n' +
+        '本轮必须遵守：\n' +
+        '  1. 立即停止一切电脑操控，不要重试、不要换工具绕开、不要试图重新拉起控制界面——\n' +
+        '     在用户重新授权之前，所有 computer_* 工具都会持续拒绝；\n' +
+        '  2. 用一两句话说明你已经做了什么、停在哪一步，以及是否存在未完成或可能已产生\n' +
+        '     影响的操作需要用户确认；\n' +
+        '  3. 询问用户希望如何继续（自己接手 / 换方式 / 重新授权 / 就此结束），然后等待回复。\n' +
+        '用户重新授权的方式：在对话框输入 /computer（这会同时解除停止状态）。'
     );
   }
   const mode = cfg.mode ?? 'manual';
@@ -310,16 +323,25 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
 
       const capture = (scale) => runPs('capture.ps1', { outPath, region, scale, grid: gridSpacing }, { signal: exec?.signal });
 
-      let res = await capture(requestedScale);
+      // The control indicator is drawn for the human watching, never for the
+      // model: leaving it up would bake a bright frame into every screenshot
+      // and cover real content along the edges. Hide it for the capture.
+      let res;
+      const paused = (await controlState?.pauseForCapture?.()) === true;
+      try {
+        res = await capture(requestedScale);
 
-      // Fit into the model's vision budget by re-capturing smaller. Doing it here
-      // (rather than letting the host downscale) keeps the preview dimensions
-      // equal to the file dimensions, so screen_mapping stays exact.
-      if (budget && res?.width > 0 && res?.height > 0 && res.width * res.height > budget) {
-        const shrink = Math.sqrt(budget / (res.width * res.height));
-        const current = Number(res.scale) > 0 ? Number(res.scale) : 1;
-        const next = Math.max(0.1, Math.min(1, current * shrink * 0.98));
-        if (next < current) res = await capture(next);
+        // Fit into the model's vision budget by re-capturing smaller. Doing it
+        // here (rather than letting the host downscale) keeps the preview
+        // dimensions equal to the file dimensions, so screen_mapping stays exact.
+        if (budget && res?.width > 0 && res?.height > 0 && res.width * res.height > budget) {
+          const shrink = Math.sqrt(budget / (res.width * res.height));
+          const current = Number(res.scale) > 0 ? Number(res.scale) : 1;
+          const next = Math.max(0.1, Math.min(1, current * shrink * 0.98));
+          if (next < current) res = await capture(next);
+        }
+      } finally {
+        if (paused) controlState?.resumeAfterCapture?.();
       }
 
       const base = {

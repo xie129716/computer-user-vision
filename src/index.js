@@ -105,6 +105,8 @@ export function apply(ctx, config) {
   const controlState = {
     stopLabel: () => overlay.stopLabel(),
     clearStop: () => overlay.clearStop(),
+    pauseForCapture: () => overlay.pauseForCapture(),
+    resumeAfterCapture: () => overlay.resumeAfterCapture(),
   };
 
   /** Whether this session may act, i.e. whether the indicator belongs on screen. */

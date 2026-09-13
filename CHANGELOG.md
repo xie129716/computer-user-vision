@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.3.6+vision.2 (control indicator, third pass)
+
+Four defects reported from watching the second pass run, each fixed at its root:
+
+- **The frame looked crooked.** The four edge strips OVERLAPPED at the corners
+  (the vertical ones spanned the full height while the horizontal ones spanned
+  the full width), so two semi-transparent windows composited there and the
+  corners came out denser than the edges. The strips now tile: vertical strips
+  are inset by the thickness, so each corner pixel belongs to exactly one
+  window. Verified by geometry (sum of strip areas now equals the frame area
+  exactly, 41804 px) and by pixel measurement (corner pixel identical to a
+  mid-edge pixel of the same strip).
+- **The slow pulse was invisible.** `WS_EX_LAYERED` was being added to windows
+  that already existed, and Windows only applies that style after a frame
+  change — so every `SetLayeredWindowAttributes` call failed silently and the
+  per-frame alpha never took effect. Each decorative window now gets a
+  `SetWindowPos(SWP_FRAMECHANGED)` right after the style change. Measured over
+  five seconds the strip brightness now swings 170 -> 232 -> 176 (spread 61),
+  a full breath about every five seconds.
+- **The indicator appeared in the AI's own screenshots.** It is drawn for the
+  human watching, never for the model: a bright frame baked into every capture
+  also covers real content along the screen edges. The host now writes a pause
+  file before capturing and removes it after; the overlay hides every window
+  within one 50ms tick. Verified: strip present (mean 209.9) -> paused
+  (mean 249.4, frame gone) -> resumed.
+- **The halo ignored the cursor shape.** It now reads the live cursor via
+  `GetCursorInfo` and compares it against the system `IDC_*` handles, then draws
+  a matching outline: a vertical capsule for the I-beam and vertical resize, a
+  horizontal capsule for horizontal resize, a rotated capsule for both
+  diagonals, a crosshair for cross, a slashed ring for "no", and a plain ring
+  for the arrow, the hand and any app-drawn cursor. Detection verified at
+  several positions; the I-beam capsule confirmed visually.
+
+Also reworked the stop contract. A stop previously produced a bare refusal,
+which invites the agent to look for a workaround. The refusal now states what
+stopped it and spells out the three things a stop usually means — the user
+thinks this turn is risky, does not want the AI driving right now, or wants a
+different approach — then constrains the turn: stop immediately, do not retry or
+route around it, say what was already done and what may need checking, and ask
+how to proceed. Re-raising control within the turn remains impossible.
+
 ## 0.3.6+vision.1 (local adaptation, second pass)
 
 Every item below comes from a failure observed while actually driving Windows

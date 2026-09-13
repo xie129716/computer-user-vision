@@ -1,7 +1,7 @@
 {
     "name":  "computer-user",
-    "version":  "0.3.15",
-    "description":  "Codex-style computer use for DeepSeek Harness (DSH): read the screen and drive the mouse \u0026 keyboard. Attaches the screenshot as a real image for vision-capable models (e.g. DeepSeek-V41-Flash) and falls back to a PNG path for text-only models. Windows.",
+    "version":  "0.3.16",
+    "description":  "Unofficial fork of computer-user by jing-hy: Codex-style Windows computer use for DeepSeek Harness. Screenshots ride the tool result as real images with an exact image-to-screen coordinate mapping; text-only routes get a PNG path.",
     "type":  "module",
     "main":  "src/index.js",
     "exports":  {
@@ -42,7 +42,7 @@
                      "codex"
                  ],
     "license":  "MIT",
-    "author":  "jing-hy",
+    "author":  "jing-hy (original computer-user); this is an unofficial fork, maintained at https://github.com/xie129716/computer-user-vision",
     "engines":  {
                     "node":  "^22.19 || \u003e=24"
                 },
@@ -66,6 +66,7 @@
                        "url":  "git+https://github.com/xie129716/computer-user-vision.git"
                    },
     "homepage":  "https://github.com/xie129716/computer-user-vision#readme",
+    "forkedFrom":  "https://github.com/jing-hy/computer-user",
     "bugs":  {
                  "url":  "https://github.com/xie129716/computer-user-vision/issues"
              }

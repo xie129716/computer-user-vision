@@ -267,3 +267,11 @@ The cross-generation settings bridge follows the pattern used by
 
 MIT — see [LICENSE](LICENSE). This fork is not affiliated with or endorsed by the upstream author;
 please report fork-specific problems here rather than upstream.
+
+**On the package name.** This package is called `computer-user`, the same name as the upstream npm
+package, and that is deliberate rather than an attempt to pass itself off as it: `cordis.patch.yml`
+registers the plugin under that specifier, so a profile can drop this fork in exactly where the
+original sat. The fork is stated where identity is actually read instead — `description`, `author`
+and a `forkedFrom` field in `package.json`, the first line of this README, and `repository`, which
+points here. The package has **no `dependencies` at all**; the only entries are `peerDependencies` on
+the harness's own `@deepseek-ai/*` packages, so nothing here resolves to a copy of anyone's work.

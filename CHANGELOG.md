@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.16 (the fork relationship is stated where identity is read)
+
+The README had always opened with "An **unofficial fork** of computer-user", credited jing-hy, and
+disclaimed affiliation — but the **package metadata did not**. It read `author: "jing-hy"` with a
+description that never mentioned a fork, which is precisely the shape a reviewer is told to look
+askance at: a package that appears to be someone else's work re-uploaded under a different account.
+Nothing here depended on a copy of anything (there are no `dependencies` at all), but the metadata
+invited the question, so it is answered in the metadata now:
+
+- `description` leads with "Unofficial fork of computer-user by jing-hy".
+- `author` names the original **and** states that this is an unofficial fork with its home.
+- `forkedFrom` records the upstream repository explicitly — a non-standard field, deliberately: it
+  is for a human reading the manifest, not for tooling.
+
+The **package name stays `computer-user`** and is not part of this change. `cordis.patch.yml`
+registers the plugin under that specifier, so renaming it would stop a profile from dropping this
+fork in where the original sat. The README now says so, so the choice does not have to be guessed.
+
+Note that this repository is **not** a GitHub fork (`fork: false`, no `parent`): it was built from
+the published 0.3.6 tarball rather than from a clone, and GitHub sets fork status only at creation.
+The relationship is therefore carried by the README, `LICENSE`, this changelog and the metadata
+above rather than by a platform badge.
+
 ## 0.3.15 (a repeatable submission for the awesome list)
 
 - **`tools/open-awesome-pr.mjs`** prepares the `awesome-dsh-plugin` entry: it forks the list, then

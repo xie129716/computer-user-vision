@@ -48,10 +48,10 @@ keyboard. The screenshot rides the tool result as a real image block together wi
 \`screen_per_pixel\` mapping, so an image-capable model looks at the screen and clicks real
 coordinates; a text-only route falls back to a PNG path. 12 \`computer_*\` tools.
 
-**It is a fork** of [jing-hy/computer-user](${REPO_URL.replace(PLUGIN, 'computer-user')}) (MIT,
-copyright notice kept in \`LICENSE\`). The upstream package no longer loads on current DSH — a
-named-export that no longer exists fails the whole ES module — and it only knew how to be looked
-at through an external OCR tool. What this fork adds, all of it in the repository:
+**It is an unofficial fork** of [jing-hy/computer-user](https://github.com/jing-hy/computer-user)
+(MIT; the copyright notice travels with the code in \`LICENSE\`). Upstream no longer loads on current
+DSH — a named export that no longer exists fails the whole ES module — and it only knew how to be
+looked at through an external OCR tool. What this fork adds, all of it in the repository:
 
 - **Pre-flight focus guard.** Every input tool takes an optional \`expect_window\`; on a mismatch
   it refuses *without sending any input* and returns the window it found. Reporting
@@ -63,6 +63,22 @@ at through an external OCR tool. What this fork adds, all of it in the repositor
   or the chat switch each lift it.
 - **A mode gate and disk-backed approval** (\`disabled / readonly / manual / auto\`), so control is
   revocable and survives a host restart.
+
+**On "do its dependencies point at the original".** That rule governs bundles, and this is not one: it
+ships behaviour, and it has **no \`dependencies\` at all** — the only entries are \`peerDependencies\` on
+the harness's own \`@deepseek-ai/*\` packages, so nothing here resolves to a copy of anyone's work. The
+fork relationship is stated where identity is actually read: \`description\`, \`author\`, an explicit
+\`forkedFrom\` field, the first line of the README, and \`repository\` — which points at this repository,
+not upstream.
+
+Two things in the same spirit, flagged rather than left to be found:
+
+- This repository is **not** a GitHub fork (\`fork: false\`, no \`parent\`). It was built from the
+  published 0.3.6 tarball rather than from a clone, and GitHub sets fork status only at creation, so
+  it cannot be added afterwards.
+- The package name is still \`computer-user\`, deliberately: \`cordis.patch.yml\` registers the plugin
+  under that specifier, so a profile can drop this fork in exactly where the original sat. Renaming
+  it would break that.
 
 **Not a duplicate of the existing computer-use entry.** \`qphotoai/dsh-computer-use-windows\` is a
 different implementation (UIA + cua-driver + optional GLM vision). This one is PowerShell/SendInput

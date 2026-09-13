@@ -201,6 +201,32 @@ public class CUAct {
     }, IntPtr.Zero);
   }
 
+  /**
+   * Raise a window, with a fallback for the foreground lock.
+   *
+   * SetForegroundWindow is refused unless the calling process already owns the
+   * foreground or received the most recent input event. A packaged app that keeps
+   * the foreground therefore blocks activation outright -- measured: with the WinUI
+   * Calculator in front, activating Notepad failed and kept failing, so the old
+   * "retrying usually works" hint was simply wrong.
+   *
+   * Synthesising an ALT press is the documented way to satisfy the rule: the
+   * calling thread then owns the last input, and the call is granted while ALT is
+   * held. ALT is pressed, the switch is made, and ALT is released immediately.
+   */
+  public static bool ForceForeground(IntPtr h) {
+    if (SetForegroundWindow(h) && Foreground() == h) return true;
+    INPUT down = K(0x12, 0, 0);                 /* VK_MENU */
+    INPUT up = K(0x12, 0, KEYEVENTF_KEYUP);
+    INPUT[] one = new INPUT[1];
+    one[0] = down; SendInput(1, one, Marshal.SizeOf(typeof(INPUT)));
+    System.Threading.Thread.Sleep(20);
+    SetForegroundWindow(h);
+    bool ok = Foreground() == h;
+    one[0] = up; SendInput(1, one, Marshal.SizeOf(typeof(INPUT)));
+    return ok;
+  }
+
   public static bool Activate(IntPtr h) {
     if (h == IntPtr.Zero) return false;
     if (IsIconic(h)) ShowWindow(h, 9);
@@ -213,7 +239,7 @@ public class CUAct {
       BringWindowToTop(h);
       ShowWindow(h, 5);
       SetWindowPos(h, IntPtr.Zero, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-      return SetForegroundWindow(h);
+      return ForceForeground(h);
     } finally {
       if (attached) AttachThreadInput(myTid, fgTid, false);
     }
@@ -250,6 +276,29 @@ public class CUAct {
     try { if (SetProcessDPIAware()) return CurrentAwareness(); } catch { }
     return CurrentAwareness();
   }
+  /**
+   * Find the top-level window that HOSTS a given process.
+   *
+   * A packaged (UWP) app owns no visible top-level window of its own: the frame
+   * on screen is an `ApplicationFrameWindow` owned by ApplicationFrameHost, and
+   * the app process only owns a `Windows.UI.Core.CoreWindow` child of it.
+   * Measured with the Calculator: the app pid owned exactly one top-level window,
+   * a 0x0 `MSCTFIME UI` input-method helper, so resolving "activate this pid" by
+   * area alone focused an invisible helper and reported success.
+   *
+   * Handles() is z-order, so the first hit is the topmost host.
+   */
+  public static IntPtr WindowHostingPid(uint pid) {
+    foreach (var h in Handles()) {
+      if (!IsWindowVisible(h)) continue;
+      if (Title(h).Length == 0) continue;
+      bool hit = false;
+      EnumChildWindows(h, (c, p) => { if (PidOf(c) == pid) { hit = true; return false; } return true; }, IntPtr.Zero);
+      if (hit) return h;
+    }
+    return IntPtr.Zero;
+  }
+
   public static uint MonitorDpi(int x, int y) {
     POINT p = new POINT(); p.X = x; p.Y = y;
     IntPtr m = MonitorFromPoint(p, 2);
@@ -301,15 +350,26 @@ function Resolve-Window {
   param($hwnd, $pid_, $title)
   if ($null -ne $hwnd -and [int64]$hwnd -ne 0) { return [IntPtr][int64]$hwnd }
   if ($null -ne $pid_ -and [int]$pid_ -ne 0) {
-    $best = $null; $bestArea = -1
+    $best = $null; $bestArea = 0
     foreach ($h in [CUAct]::Handles()) {
       if ([int][CUAct]::PidOf($h) -ne [int]$pid_) { continue }
       if ([string]::IsNullOrWhiteSpace([CUAct]::Title($h))) { continue }
       $r = [CUAct]::VisibleRect($h)
       $area = ($r.Right - $r.Left) * ($r.Bottom - $r.Top)
+      # A degenerate window (0x0, or a few pixels of input-method helper) is not
+      # something a caller can mean by "this process's window". Before this filter
+      # the Calculator's pid resolved to its 0x0 `MSCTFIME UI` helper, which then
+      # reported a successful activation while nothing usable was in front.
+      if ($area -lt 20000) { continue }
+      if ((([CUAct]::GetWindowLong($h, -20) -band 0x80) -ne 0)) { continue }   # no tool windows
       if ($area -gt $bestArea) { $bestArea = $area; $best = $h }
     }
-    return $best
+    if ($null -ne $best) { return $best }
+    # Nothing of its own: it is probably a packaged app whose frame is hosted by
+    # ApplicationFrameHost, so ask which top-level window hosts this process.
+    $hosted = [CUAct]::WindowHostingPid([uint32][int]$pid_)
+    if ($hosted -ne [IntPtr]::Zero) { return $hosted }
+    return $null
   }
   if (-not [string]::IsNullOrWhiteSpace([string]$title)) {
     $needle = ([string]$title).ToLower()
@@ -339,11 +399,12 @@ $script:CLASS_HINT = '(?i)BUTTON|EDIT|COMBOBOX|LISTBOX|LISTVIEW|TREEVIEW|TOOLBAR
 $script:CACHE_PROPS = @(
   'NameProperty', 'ClassNameProperty', 'AutomationIdProperty', 'ControlTypeProperty',
   'BoundingRectangleProperty', 'IsOffscreenProperty', 'IsEnabledProperty',
-  'HasKeyboardFocusProperty', 'ProcessIdProperty',
-  'IsInvokePatternAvailableProperty', 'IsTogglePatternAvailableProperty',
-  'IsSelectionItemPatternAvailableProperty', 'IsExpandCollapsePatternAvailableProperty',
-  'IsValuePatternAvailableProperty', 'IsScrollItemPatternAvailableProperty'
+  'HasKeyboardFocusProperty', 'ProcessIdProperty'
 )
+# Deliberately NOT in the list above: 'IsInvokePatternAvailableProperty' and its
+# siblings. A CacheRequest does not populate them - measured on a WinUI
+# Calculator they read False through the cache and True on a live read - so
+# patterns are queried live, per kept element, instead.
 
 # The AutomationElement property accessors are static readonly FIELDS, so
 # GetProperty returns null for every one of them; fall back to the field lookup.
@@ -396,13 +457,20 @@ function Get-RefList {
       $w = [int]$r.Width; $h = [int]$r.Height
       if ($w -lt 3 -or $h -lt 3) { continue }
 
+      # Live pattern query, NOT the cached IsXxxPatternAvailable properties.
+      # Measured on a WinUI Calculator: IsInvokePatternAvailable is True on a live
+      # read but False through a CacheRequest, so cached flags made every control
+      # look inert and the ref list understated what can be activated without a
+      # mouse. GetSupportedPatterns() is one call per KEPT element (bounded by
+      # MaxOut); the scalar properties still come from the single cached pass.
       $pat = @()
-      if ($ci.IsInvokePatternAvailable) { $pat += 'Invoke' }
-      if ($ci.IsTogglePatternAvailable) { $pat += 'Toggle' }
-      if ($ci.IsSelectionItemPatternAvailable) { $pat += 'SelectionItem' }
-      if ($ci.IsExpandCollapsePatternAvailable) { $pat += 'ExpandCollapse' }
-      if ($ci.IsValuePatternAvailable) { $pat += 'Value' }
-      if ($ci.IsScrollItemPatternAvailable) { $pat += 'ScrollItem' }
+      try {
+        foreach ($p in $el.GetSupportedPatterns()) {
+          $n = [string]$p.ProgrammaticName
+          $n = $n -replace 'PatternIdentifiers\.Pattern$', '' -replace '^Pattern\.', '' -replace 'Pattern$', ''
+          if ($n) { $pat += $n }
+        }
+      } catch { }
 
       $nm = [string]$ci.Name
       $cls = [string]$ci.ClassName
@@ -571,6 +639,33 @@ function Find-ByName {
 }
 
 # ---------------------------------------------------------------------------
+# the expect_window pre-flight, shared by EVERY input action
+# ---------------------------------------------------------------------------
+# Input acts on "wherever focus is at this instant", so a window that quietly
+# takes focus between two steps redirects the keystrokes into the wrong
+# application. Checking before acting is the only way to prevent that instead of
+# explaining it afterwards.
+#
+# This has to be called from every action that sends input. When the three
+# one-shot scripts were merged into this one, the guard was carried into `click`
+# only, and `type`/`keypress`/`scroll`/`drag` silently ignored `expect_window`
+# while still reporting success -- a safety regression, caught by an acceptance
+# run that typed 17 characters into the window it had been told to avoid.
+function Test-ExpectWindow($expect) {
+  if ([string]::IsNullOrWhiteSpace([string]$expect)) { return $null }
+  $fg = [CUAct]::Foreground()
+  $title = if ($fg -eq [IntPtr]::Zero) { '' } else { [CUAct]::Title($fg) }
+  if ($title.ToLower().Contains(([string]$expect).ToLower())) { return $null }
+  return [ordered]@{
+    ok = $true
+    refused = $true
+    expected_window = [string]$expect
+    focused_window = @{ title = $title; pid = [int][CUAct]::PidOf($fg); hwnd = $fg.ToInt64() }
+    error_en = "refused: foreground window '$title' does not contain '$expect'"
+  }
+}
+
+# ---------------------------------------------------------------------------
 # the compound click
 # ---------------------------------------------------------------------------
 function Do-Click {
@@ -582,16 +677,8 @@ function Do-Click {
   # -- expect_window pre-flight, in the SAME process as the click. Running it as
   # a separate PowerShell call cost ~380 ms and opened a window in which focus
   # could change between the check and the action.
-  if (-not [string]::IsNullOrWhiteSpace([string]$expectWindow)) {
-    $title = if ($before -eq [IntPtr]::Zero) { '' } else { [CUAct]::Title($before) }
-    if (-not $title.ToLower().Contains(([string]$expectWindow).ToLower())) {
-      return @{
-        ok = $true; refused = $true; expected_window = [string]$expectWindow
-        focused_window = @{ title = $title; pid = [int][CUAct]::PidOf($before); hwnd = $before.ToInt64() }
-        error_en = "refused: foreground window '$title' does not contain '$expectWindow'"
-      }
-    }
-  }
+  $refusal = Test-ExpectWindow $expectWindow
+  if ($null -ne $refusal) { return $refusal }
 
   $method = 'mouse'
   $point = $null
@@ -818,6 +905,8 @@ switch ($action) {
   }
 
   'drag' {
+    $refusal = Test-ExpectWindow $cfg.expectWindow
+    if ($null -ne $refusal) { Emit $refusal }
     $sx = [int]$cfg.from[0]; $sy = [int]$cfg.from[1]
     $tx = [int]$cfg.to[0]; $ty = [int]$cfg.to[1]
     [void][CUAct]::MoveVerified($sx, $sy)
@@ -845,6 +934,8 @@ switch ($action) {
   }
 
   'scroll' {
+    $refusal = Test-ExpectWindow $cfg.expectWindow
+    if ($null -ne $refusal) { Emit $refusal }
     $x = [int]$cfg.coordinate[0]; $y = [int]$cfg.coordinate[1]
     $dir = [string]$cfg.direction; if ([string]::IsNullOrWhiteSpace($dir)) { $dir = 'down' }
     $clicks = [int]$cfg.clicks; if ($clicks -le 0) { $clicks = 1 }
@@ -859,6 +950,8 @@ switch ($action) {
   }
 
   'type' {
+    $refusal = Test-ExpectWindow $cfg.expectWindow
+    if ($null -ne $refusal) { Emit $refusal }
     $text = [string]$cfg.text
     $interval = [int]$cfg.typingIntervalMs; if ($interval -lt 0) { $interval = 0 }
     # Typing into a named field is the common case, and UIA can put the caret
@@ -892,6 +985,8 @@ switch ($action) {
   }
 
   'keypress' {
+    $refusal = Test-ExpectWindow $cfg.expectWindow
+    if ($null -ne $refusal) { Emit $refusal }
     $keys = @($cfg.keys)
     if ($keys.Count -eq 0) { Fail("keypress requires at least one key") }
     $down = @()
@@ -910,7 +1005,14 @@ switch ($action) {
     [void][CUAct]::Activate($target)
     Start-Sleep -Milliseconds 220
     $fg = [CUAct]::Foreground()
-    $succeeded = ($fg -eq $target)
+    # "It is the foreground window" is not enough: Windows will happily report an
+    # invisible 0x0 helper as foreground, and the previous check called that a
+    # success because the handles matched. A window with no visible area is never
+    # what a caller meant to focus.
+    $fr = if ($fg -eq [IntPtr]::Zero) { $null } else { [CUAct]::VisibleRect($fg) }
+    $fgArea = if ($null -ne $fr) { ($fr.Right - $fr.Left) * ($fr.Bottom - $fr.Top) } else { 0 }
+    $fgVisible = ($fg -ne [IntPtr]::Zero) -and [CUAct]::IsWindowVisible($fg)
+    $succeeded = ($fg -eq $target) -and ($fgArea -gt 0)
     $out = [ordered]@{
       ok = $true
       activated = $succeeded
@@ -921,9 +1023,11 @@ switch ($action) {
       # Hiding a foreground window leaves Windows reporting it as foreground even
       # though nothing is on screen. Saying "a hidden window holds the foreground"
       # is a very different instruction from "the window never came forward".
-      $fgVisible = ($fg -ne [IntPtr]::Zero) -and [CUAct]::IsWindowVisible($fg)
       $out.foreground_visible = $fgVisible
-      if (-not $fgVisible) {
+      $out.foreground_area = $fgArea
+      if ($fg -eq $target -and $fgArea -le 0) {
+        $out.hint_en = "hwnd $($target.ToInt64()) became the foreground window but has NO visible area (0x0): it is a hidden helper window, not the window you meant. Find the real one with computer_list_windows (packaged apps are hosted by ApplicationFrameHost, so their frame belongs to a different process than the app) and pass that hwnd."
+      } elseif (-not $fgVisible) {
         $out.hint_en = "activation blocked by a HIDDEN window (hwnd $($fg.ToInt64()) '$([CUAct]::Title($fg))') that the system still reports as foreground; bring the target forward with an explicit click on its title bar, or Activate again"
       } else {
         $out.hint_en = "the requested window never became foreground (a UWP or privileged window may be holding it); retrying usually works"
@@ -1076,14 +1180,19 @@ switch ($action) {
             $lab = [string]$a.ref
             $sz = $g2.MeasureString($lab, $aFont)
             $cw = [int]$sz.Width + 4; $chh = [int]$sz.Height + 2
-            # Prefer to sit just above the control, drop inside when there is no
-            # room. On a dense grid every chip collides, so a colliding label is
-            # skipped and only the outline stays. A wall of overlapping labels is
-            # unreadable and would be worse than no annotation; the textual element
-            # list already covers that case.
-            $lx = $l
-            $ly = $t - $chh
-            if ($ly -lt 0) { $ly = $t + 1 }
+            # Prefer the control's OWN top-left corner. Drawing the chip above the
+            # rectangle puts it outside the control, on top of whatever happens to
+            # be there -- on a window-sized element that reads as if the label
+            # belonged to the neighbouring window. Only when the control is too
+            # short to hold the chip does it go above, and it is skipped entirely
+            # if that would collide with a chip already drawn.
+            $lx = $l + 1
+            if ($ht -ge ($chh + 6)) {
+              $ly = $t + 1
+            } else {
+              $ly = $t - $chh
+              if ($ly -lt 0) { $ly = $t + 1 }
+            }
             # Parenthesise the sums: inside @(...) the COMMA binds tighter than
             # '+', so @($lx, $ly, $lx + $cw, $ly + $chh) silently flattens into a
             # six-element array and the overlap test never matches anything.

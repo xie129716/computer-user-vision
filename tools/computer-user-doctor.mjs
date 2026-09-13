@@ -2,12 +2,14 @@
 /**
  * computer-user doctor — health check + version-independent self-repair.
  *
- * Why this exists: the `pnpm patch` that carries the local adaptation is keyed
- * to one exact version (`computer-user@0.3.6`). If the dependency range ever
- * resolves to another version, pnpm silently stops applying the patch and the
- * plugin reverts to a state that cannot even load on DSH >= 0.1.2. This script
- * is the safety net: it re-derives the *defects* from the installed source
- * rather than replaying a diff, so it keeps working across versions.
+ * Why this exists: a local adaptation is only as durable as the way it was
+ * installed. Two shapes survive a `pnpm install`, and they need different
+ * evidence: a URL/git dependency pins the fork in the profile's own
+ * package.json, while a `pnpm patch` rewrites a registry version on install.
+ * What does NOT survive is a bare registry version with no patch — the next
+ * install silently restores upstream. This script is the safety net: it
+ * re-derives the *defects* from the installed source rather than replaying a
+ * diff, so it keeps working across versions.
  *
  * Two classes of problem, handled differently:
  *
@@ -16,10 +18,10 @@
  *      A missing named export fails the whole ES module, so no tool, card or
  *      command ever registers. The repair is small, syntactic, and idempotent.
  *
- *   2. Missing feature (not repairable here) — the vision-facing screenshot
- *      (image block + screen_per_pixel mapping) is a ~300-line change across
- *      five files. It cannot be re-derived from a new upstream release, so this
- *      reports it instead of guessing, and the pinned version keeps it in place.
+ *   2. Missing feature (not repairable here) — the element-ref targeting and the
+ *      vision-facing screenshot are large, multi-file changes. They cannot be
+ *      re-derived from a new upstream release, so this reports them instead of
+ *      guessing, and the pinned dependency keeps them in place.
  *
  * Usage:
  *   node tools/computer-user-doctor.mjs           # check, exit 1 if unhealthy
@@ -174,16 +176,25 @@ if (!(await exists(PKG_DIR))) {
 const pkgJson = JSON.parse(await readFile(join(PKG_DIR, 'package.json'), 'utf8'));
 say(`computer-user ${pkgJson.version} at ${PKG_DIR}`);
 
-// ── 2. is the patch still registered? ───────────────────────────────────────
+// ── 2. will a reinstall keep the fork? ──────────────────────────────────────
+// An earlier version of this check only understood `pnpm patch`, so it reported
+// a perfectly durable URL-pinned install as a problem on every single install.
 {
   const workspaceYaml = await readFile(join(PROFILE_DIR, 'pnpm-workspace.yaml'), 'utf8').catch(() => '');
   const profPkg = JSON.parse(await readFile(join(PROFILE_DIR, 'package.json'), 'utf8').catch(() => '{}'));
+  const spec = String((profPkg && profPkg.dependencies && profPkg.dependencies['computer-user']) || '');
+  const isPinnedSpec = /^(https?:|git\+|file:|link:)/.test(spec);
   const inWorkspace = /patchedDependencies:[\s\S]*computer-user@/.test(workspaceYaml);
   const inPackage = !!(profPkg.pnpm && profPkg.pnpm.patchedDependencies && profPkg.pnpm.patchedDependencies['computer-user']);
-  if (inWorkspace || inPackage) {
-    say('  patch registered in patchedDependencies');
+  if (isPinnedSpec) {
+    say(`  pinned by the profile dependency itself: ${spec}`);
+  } else if (inWorkspace || inPackage) {
+    say(`  patch registered in patchedDependencies (dependency spec: ${spec || 'unknown'})`);
   } else {
-    problems.push('the pnpm patch is NOT registered — a reinstall will lose the local fixes');
+    problems.push(
+      `the dependency spec is "${spec || 'missing'}" with no pnpm patch, so the next install would restore `
+      + 'upstream computer-user and drop every local fix — repoint the dependency at the fork tarball'
+    );
   }
 }
 
@@ -199,6 +210,20 @@ if (visionPresent) {
 } else {
   problems.push(
     'vision adaptation MISSING — this version was not adapted; the screenshot will only return a file path again'
+  );
+}
+
+// The fork's structural marker. Upstream never had a merged executor and never
+// had element refs, so a release that silently reverted to upstream is caught
+// here even if it happened to carry the vision change.
+const hasExecutor = await exists(join(PKG_DIR, 'src', 'act.ps1'));
+const hasElementRefs = /lookupRef|computer_elements/.test(toolsJs);
+if (hasExecutor && hasElementRefs) {
+  say('  exact-click targeting present (src/act.ps1 + element ref resolution)');
+} else {
+  problems.push(
+    `exact-click targeting MISSING (act.ps1: ${hasExecutor ? 'yes' : 'no'}, ref resolution: ${hasElementRefs ? 'yes' : 'no'}) `
+    + '— clicks fall back to estimating pixel positions off a downscaled screenshot'
   );
 }
 

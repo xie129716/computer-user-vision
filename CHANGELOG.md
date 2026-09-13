@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.3.20 (four defects the acceptance run found)
+
+Driving real applications — a WinUI Calculator, Notepad, and a 22 px toolbar-density target board —
+turned up four things that source review and the unit-level checks could not see.
+
+- **`expect_window` was silently ignored by every input tool except `click`.** Merging the three
+  one-shot scripts into `act.ps1` carried the pre-flight guard into `click` only; `type`,
+  `keypress`, `scroll` and `drag` accepted the parameter, never checked it, and reported success.
+  Caught by asking `computer_type` to type into Notepad with `expect_window: "计算器"` while Notepad
+  had focus — it typed all 17 characters. The guard is now one shared `Test-ExpectWindow` called by
+  every action that sends input, and the acceptance run proves a refused call leaves the document
+  byte-identical.
+
+- **`activate` by pid resolved to a 0x0 input-method helper.** A packaged (UWP) app owns no visible
+  top-level window of its own — the Calculator's frame is an `ApplicationFrameWindow` owned by
+  ApplicationFrameHost — so the only top-level window carrying that pid was a zero-area
+  `MSCTFIME UI`. Activation then **reported success**, because the handles matched. Windows under
+  20000 px and tool windows are now skipped, and when a process owns nothing usable the executor
+  asks which top-level window *hosts* it.
+
+- **Activation could not take the foreground from a packaged app, and retrying never helped.** The
+  hint used to say "retrying usually works"; measured against the Calculator it failed every single
+  time, because `SetForegroundWindow` is refused unless the caller already owns the foreground. The
+  documented remedy — synthesise an ALT press so the calling thread owns the most recent input — is
+  now the fallback, and Calculator → Notepad succeeds on the first call.
+
+- **Cached pattern-availability flags are always false.** `IsInvokePatternAvailable` and its
+  siblings read `True` on a live read and `False` through a `CacheRequest`, so the ref list claimed
+  no control supported anything and every XAML button looked inert. Patterns are queried live, per
+  kept element; the Calculator now reports `{Invoke,ScrollItem}` and `computer_click` succeeds with
+  `method: "invoke"` — the mouse never moves.
+
+- **Annotation labels were drawn above the control**, which put a window-sized element's label
+  outside its own rectangle and on top of the neighbouring window. The chip now prefers the
+  control's own top-left corner, and only goes above when the control is too short to hold it.
+
+- **New `verify/ps1-hygiene.mjs`**: every bundled `.ps1` must be pure ASCII (PowerShell 5.1 decodes
+  BOM-less files as ANSI) and no code may reference the retired one-shot scripts. Both rules had
+  already been broken once, each time silently.
+
+- **`verify/plugin-exports.mjs`** no longer scans a plugin's own `verify/` directory. It was reading
+  a test fixture that quotes the broken import shape and reporting it as a missing export in the
+  plugin, which made a clean package look broken the moment `verify/` started shipping.
+
+Acceptance evidence for this release, measured on the live desktop:
+Calculator `7 × 8 = 56` via four `name` clicks (all `method: "invoke"`, UIA read back
+`显示为 56`); Notepad round-trip whose clipboard contents compared **byte-identical** to the 31
+characters requested (CJK, `×÷`, `①②③`, em dashes); and 8/8 ref clicks on a 22 px-tall target grid
+landing exactly on the control centre — **maximum absolute error 0 px**.
+
 ## 0.3.19 (packaging fix: 0.3.18 shipped without its manifest)
 
 - **0.3.18 is withdrawn.** Its tarball was assembled from the `files` list with `tar` instead of

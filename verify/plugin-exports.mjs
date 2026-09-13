@@ -18,12 +18,22 @@ const require = createRequire(join(PROFILE, 'package.json'));
 const profilePkg = JSON.parse(await readFile(join(PROFILE, 'package.json'), 'utf8'));
 const deps = Object.keys(profilePkg.dependencies ?? {});
 
+/**
+ * Collect the JavaScript a plugin actually loads.
+ *
+ * `verify/` is skipped on purpose. It ships inside the package (so the suite is
+ * reproducible from a release) but it is test code, and a test fixture that
+ * deliberately quotes the broken import shape — doctor-heal.mjs does exactly that
+ * — is not a missing export in the plugin. Scanning it produced a failure that
+ * looked like a real regression.
+ */
 async function jsFiles(dir, out = [], depth = 0) {
   if (depth > 4) return out;
   let entries;
   try { entries = await readdir(dir, { withFileTypes: true }); } catch { return out; }
   for (const e of entries) {
     if (e.name === 'node_modules') continue;
+    if (e.isDirectory() && e.name === 'verify') continue;
     const p = join(dir, e.name);
     if (e.isDirectory()) await jsFiles(p, out, depth + 1);
     else if (e.name.endsWith('.js') || e.name.endsWith('.mjs')) out.push(p);

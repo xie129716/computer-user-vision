@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.10 (honest `activated_only` advice)
+
+`computer_click` flags `activated_only` when the foreground window changed and the click landed
+inside the new one — the activation-click trap. The hint then said, flatly, "replay the same click".
+
+That advice is unsafe in one case the heuristic cannot distinguish: a click that **closes a dialog**
+also brings the window underneath forward, producing an identical signature. Replaying there would
+apply the action **twice**. The hint now says so and asks the caller to check `foreground_after`
+against the window it expected before deciding to replay. `skills/computer-use.md` carries the same
+caveat.
+
 ## 0.3.9 (focus guard + an honest control switch)
 
 Both defects below were found by driving the build through a scripted acceptance run rather than by

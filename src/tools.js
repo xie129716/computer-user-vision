@@ -493,7 +493,13 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
           && point[1] >= after.rect[1] && point[1] <= after.rect[3];
         if (changed && inside) {
           out.activated_only = true;
-          out.hint = '这次点击很可能只把窗口激活、并未命中控件——请重新执行同一次点击。';
+          // Heuristic, with one honest false positive: a click that CLOSES a
+          // dialog also brings the window beneath it forward, producing the same
+          // signature. Replaying blindly could then apply the action twice, so
+          // the hint asks the caller to check rather than to just retry.
+          out.hint = '这次点击很可能只把窗口激活、并未命中控件——请重新执行同一次点击；'
+            + '但如果这一下本来就是「关闭对话框/菜单」让下方窗口浮上来，则属正常。'
+            + '先看 foreground_after 是不是你预期的那个窗口，再决定要不要重放。';
         }
       }
       return out;

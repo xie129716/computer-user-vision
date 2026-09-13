@@ -78,8 +78,10 @@ computer-user 插件提供 12 个 `computer_*` 工具，让模型像人手一样
 computer_activate_window({ hwnd: 132374 })     # 或 { pid } 或 { title: "豆包" }
 ```
 
-置前之后再点击才可靠。若 `computer_click` 返回 `activated_only: true`，就是在告诉你
-「刚才那一下只激活了窗口」，应当重试同一次点击。
+置前之后再点击才可靠。若 `computer_click` 返回 `activated_only: true`，通常是在告诉你
+「刚才那一下只激活了窗口」，应当重试同一次点击。**但这是启发式判断**：如果那一下本来
+就是「关闭对话框 / 关掉菜单」让下面的窗口浮上来，也会命中同样的特征。所以重试前先看
+一眼 `foreground_after` 是不是你预期的那个窗口，别盲目重放。
 
 ### 操作后回报（设置 `verify_actions`，默认开）
 
@@ -89,6 +91,20 @@ computer_activate_window({ hwnd: 132374 })     # 或 { pid } 或 { title: "豆�
   - `activated_only`：是否只是激活了窗口
 - `computer_type` / `computer_keypress` 额外返回 `focused_window`——输入到底送进了
   哪个窗口。以前输错窗口是完全静默的。
+- **`expect_window`（前置校验，比事后回报管用得多）**：`computer_type` /
+  `computer_keypress` / `computer_click` / `computer_scroll` / `computer_drag`
+  都接受这个可选参数，要求「当前前台窗口标题必须包含这段文字」，不匹配就**直接拒绝，
+  一个字符、一次点击都不会发出去**：
+
+  ```
+  computer_type({ text: "hello", expect_window: "记事本" })
+  # 前台其实是浏览器 → { chars: 0, refused: true, expected_window: "记事本",
+  #                      focused_window: { title: "... Edge" }, hint: "..." }
+  ```
+
+  事后回报只能当验尸报告：焦点在你两步之间漂走了，等你看到 `focused_window`
+  时键早就按下去了（真事：一个本该打进记事本的 `Ctrl+H` 打进了浏览器）。凡是
+  「这串输入必须进某个特定窗口」的场合，都该带上 `expect_window`。
 
 ### 截图坐标网格
 

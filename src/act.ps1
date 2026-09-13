@@ -446,6 +446,20 @@ function Get-AEProp([string]$name) {
   return $m.GetValue($null)
 }
 
+# A BoundingRectangle is a System.Windows.Rect. An element with no on-screen area
+# reports Rect.Empty, whose Width and Height are double.NegativeInfinity - and
+# casting THAT to [int] throws "value too large or too small for an Int32", which
+# takes the entire tool call down with exit 1. verify/element-refs.mjs caught a
+# window whose root element reports exactly that. Zero is the honest reading, and
+# callers must treat 0 as "unknown" rather than as a real size.
+function Get-RectSize($r) {
+  if ($null -eq $r -or $r.IsEmpty) { return @{ W = 0; H = 0 } }
+  $w = $r.Width; $h = $r.Height
+  if ([double]::IsNaN($w) -or [double]::IsInfinity($w)) { $w = 0 }
+  if ([double]::IsNaN($h) -or [double]::IsInfinity($h)) { $h = 0 }
+  return @{ W = [int]$w; H = [int]$h }
+}
+
 function Get-RefList {
   # MaxScan is a runaway guard, not a budget. Measured on a 4054-element Chromium
   # tree: the one cached property pass costs ~605 ms, while filtering all 2500
@@ -460,7 +474,19 @@ function Get-RefList {
   try { $rootEl = [System.Windows.Automation.AutomationElement]::FromHandle($Root) } catch { }
   if ($null -eq $rootEl) { return @{ ok = $false; reason = 'window has no UI Automation element' } }
   $rootR = $rootEl.Current.BoundingRectangle
-  $rootW = [int]$rootR.Width; $rootH = [int]$rootR.Height
+  $rootSize = Get-RectSize $rootR
+  $rootW = $rootSize.W; $rootH = $rootSize.H
+  if ($rootW -le 0 -or $rootH -le 0) {
+    # An empty root rectangle is not hypothetical: a minimized window, a hidden
+    # window, or one owned by a remote-control session reports Rect.Empty, whose
+    # Width and Height are double.NegativeInfinity. Casting that to [int] used to
+    # throw and abort the entire tool call with exit 1 -
+    # verify/element-refs.mjs caught it on a minimized ToDesk window, where
+    # computer_screenshot returned a hard error instead of "no controls".
+    # There is genuinely nothing to enumerate, so say WHY rather than hand back a
+    # bare empty list the caller has to guess about.
+    return @{ ok = $false; reason = 'the window reports no on-screen rectangle (minimized, hidden, or a remote-control session), so there are no controls to enumerate' }
+  }
 
   $cache = New-Object System.Windows.Automation.CacheRequest
   $added = 0
@@ -524,7 +550,8 @@ function Get-RefList {
         if (-not ($hasName -or $actionable -or $hinted -or ($ctName -in @('Text', 'Image', 'Document')))) { continue }
       }
       # A nameless element covering the whole window is that window's content
-      # container, not a target.
+      # container, not a target. (rootW/rootH are guaranteed non-zero here - an
+      # empty root rectangle returns early above.)
       if (-not $actionable -and $w -ge ($rootW - 2) -and $h -ge ($rootH - 2)) { continue }
 
       $rows.Add([pscustomobject]@{
@@ -900,7 +927,10 @@ function Do-Click {
         $at.type = $el.Current.LocalizedControlType
         if ($el.Current.AutomationId) { $at.automationId = $el.Current.AutomationId }
         $at.pid = [int]$el.Current.ProcessId
-        $at.rect = @([int]$r.X, [int]$r.Y, [int]([int]$r.X + [int]$r.Width), [int]($r.Y + [int]$r.Height))
+        $rs = Get-RectSize $r
+        $rx = if ($r.IsEmpty) { 0 } else { [int]$r.X }
+        $ry = if ($r.IsEmpty) { 0 } else { [int]$r.Y }
+        $at.rect = @($rx, $ry, ($rx + $rs.W), ($ry + $rs.H))
         $out.at = $at
         # Confirm the hit by GEOMETRY first, then by name.
         #

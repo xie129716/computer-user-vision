@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.27 (a window with no rectangle took the whole tool call down)
+
+Found by running `verify/element-refs.mjs` against a minimized ToDesk window, which the desktop
+happened to leave in the foreground.
+
+- **A `BoundingRectangle` of `Rect.Empty` aborted every enumeration with exit 1.** The property is a
+  `System.Windows.Rect`, and an element with no on-screen area - minimized, hidden, or owned by a
+  remote-control session - reports `Rect.Empty`, whose `Width` and `Height` are
+  `double.NegativeInfinity`. Casting that to `[int]` throws *"value too large or too small for an
+  Int32"*, and because the cast sat in the middle of the screenshot path, `computer_screenshot`
+  returned a hard error rather than a result.
+
+  It now says why instead of crashing:
+
+  > UI Automation is unavailable for this window: the window reports no on-screen rectangle
+  > (minimized, hidden, or a remote-control session), so there are no controls to enumerate
+
+  The same shape is guarded on the two other `BoundingRectangle` reads - the per-element loop
+  (which already checked `IsEmpty`) and the "what is under the cursor" report. Since an empty root
+  rectangle now returns early, the "element covers the whole window" filter no longer has to
+  defend against `rootW`/`rootH` being 0.
+
 ## 0.3.26 (the banner stopped eating clicks — and the brake works again)
 
 Two bugs, both in the control indicator, both found by measuring instead of looking. The second one

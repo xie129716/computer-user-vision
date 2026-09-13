@@ -153,6 +153,24 @@ check('A10 a minimized window reports restored geometry, not its 146x21 sliver',
   badMinimized.length === 0,
   `${minimized.length} minimized window(s); ${badMinimized.length} without usable geometry`);
 
+// purpose:"look" is the cheap path for "just show me the screen": no element
+// enumeration, JPEG, and a smaller frame. Measured on the PowerShell side, the
+// enumeration alone doubles a capture (1075 ms against 521 ms), and the frame the
+// vision model has to encode drops from ~135 KB to ~23 KB.
+const tInspect = Date.now();
+const insp = await tool('computer_screenshot').execute({}, exec);
+const inspectMs = Date.now() - tInspect;
+const tLook = Date.now();
+const look = await tool('computer_screenshot').execute({ purpose: 'look' }, exec);
+const lookMs = Date.now() - tLook;
+check('A11 purpose:"look" skips enumeration and returns a smaller JPEG',
+  look.elements_skipped === true && /\.jpe?g$/i.test(look.path) && look.scale <= 0.35 && look.width * look.height < 400000
+    && insp.elements_skipped !== true,
+  `look: ${look.width}x${look.height} scale=${look.scale} elements=${look.element_count}; inspect: ${insp.width}x${insp.height} elements=${insp.element_count}`);
+check('A12 purpose:"look" is actually faster than the default inspect capture',
+  lookMs < inspectMs,
+  `inspect ${inspectMs} ms vs look ${lookMs} ms`);
+
 // ── B. real clicks (opt in) ─────────────────────────────────────────────────
 if (!WITH_CLICK) {
   console.log('\n(--click not given: skipping the live click checks)');

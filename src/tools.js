@@ -305,7 +305,9 @@ function screenshotEnvelope(value) {
   } else if (v.elements_skipped) {
     // Distinguished from "found nothing": the caller asked for no enumeration, so
     // saying the window has no controls would be wrong and misleading.
-    lines.push('element enumeration was skipped for this capture (max_elements: 0), so no refs are listed; call computer_elements when you need them.');
+    lines.push(v.purpose === 'look'
+      ? 'purpose:"look" — this capture skipped the element enumeration on purpose (cheapest path to just see the screen). Take another one without purpose, or call computer_elements, when you need refs to click.'
+      : 'element enumeration was skipped for this capture (max_elements: 0), so no refs are listed; call computer_elements when you need them.');
   } else {
     lines.push('no actionable elements were found in the focused window: fall back to screen_mapping, or focus the right window first (computer_list_windows / computer_activate_window).');
   }
@@ -364,13 +366,15 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
       'Act on the returned refs rather than on estimated pixels: computer_click {ref:"e12"} or {name:"<visible text>"}. A downscaled preview is roughly 1.8 screen pixels per image pixel, which is precisely how a click misses a small control.',
       'When the current model accepts image input the screenshot is attached to this result as an actual image — look at it directly; otherwise only a PNG path is returned and the element list is how you locate things.',
       `${HEAD}`,
-      'Parameters: path (optional output file), region (optional [x0,y0,x1,y1] fractions in 0..1 to capture a sub-area), scale (optional 0.1..1 downscale), grid (optional labelled coordinate-grid spacing in screen px), annotate (default false — draw a ref label on each control; helpful on a sparse window, cluttered on a dense one), include_static (also list plain Text/Image elements), max_elements (cap on refs, default 60).',
+      'Parameters: purpose ("inspect" [default] or "look"), path (optional output file), region (optional [x0,y0,x1,y1] fractions in 0..1 to capture a sub-area), scale (optional 0.1..1 downscale), grid (optional labelled coordinate-grid spacing in screen px), annotate (default false — draw a ref label on each control; helpful on a sparse window, cluttered on a dense one), include_static (also list plain Text/Image elements), max_elements (cap on refs, default 60).',
+      'purpose:"look" is the cheap way to just see the screen: it skips the element enumeration (which doubles the capture cost), writes a JPEG, and downsizes to 0.35 — the frame the vision model has to encode drops from ~135 KB to ~23 KB. Use it when nothing is going to be clicked by ref; ask for the default "inspect" when you need refs.',
       'Returns { path, width, height, virtual_offset:[x,y], scale, screen_per_image:[kx,ky], elements?, image?, screen_per_pixel? }. screen_mapping converts an image pixel to the virtual-screen pixel the input tools take.',
     ].join(' '),
     parameters: {
       type: 'object',
       additionalProperties: true,
       properties: {
+        purpose: { type: 'string', enum: ['inspect', 'look'], description: '"inspect" (default) returns the element refs so a click can be aimed; "look" is cheaper — no enumeration, JPEG, scale 0.35 — for when you only need to see the screen.' },
         path: { type: 'string', description: 'Optional absolute or cwd-relative output path for the PNG. When empty a unique file is created under the configured screenshot_dir (default: OS temp).' },
         region: { type: 'array', minItems: 4, maxItems: 4, items: { type: 'number' }, description: 'Optional [x0, y0, x1, y1] fractions (0..1) to capture only a sub-area of the virtual screen.' },
         scale: { type: 'number', description: 'Optional 0.1..1 downscale for the saved image (default: the configured default_scale, 1 = full resolution). In vision mode the result is additionally fitted into the model\'s pixel budget.' },
@@ -426,19 +430,40 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
 
       const cwd = exec?.agent?.session?.header?.cwd ?? process.cwd();
       const dir = cfg.screenshot_dir?.trim() ? pathResolve(cwd, cfg.screenshot_dir) : join(tmpdir(), 'computer-user');
+
+      // purpose: "look" is the cheap path for "just show me the screen".
+      //
+      // Measured, on the PowerShell side: a 0.5-scale capture WITH the element
+      // enumeration costs 1075 ms against 521 ms without it, and an element list is
+      // dead weight when nothing is going to be clicked by ref. JPEG is 43 KB where
+      // PNG is 135 KB for the same frame, and scale 0.35 takes it to 23 KB — which
+      // is what the vision model actually has to encode. The four settings below are
+      // the recipe; making the caller remember all four meant it usually got half of
+      // them right.
+      const purpose = typeof args?.purpose === 'string' ? args.purpose.trim().toLowerCase() : '';
+      const lookMode = purpose === 'look';
+      const LOOK_SCALE = 0.35;
+
       const outPath = args && args.path
         ? pathResolve(cwd, String(args.path))
-        : join(dir, `shot-${Date.now()}-${randomBytes(4).toString('hex')}.png`);
+        : join(dir, `shot-${Date.now()}-${randomBytes(4).toString('hex')}${lookMode ? '.jpg' : '.png'}`);
       const region = Array.isArray(args?.region) && args.region.length === 4 ? args.region : undefined;
-      const requestedScale = typeof args?.scale === 'number' ? args.scale : cfg.default_scale;
-      const gridSpacing = typeof args?.grid === 'number' ? args.grid : (Number(cfg.grid_spacing) || 0);
-      const annotate = args?.annotate === true || (args?.annotate === undefined && cfg.annotate_screenshots === true);
+      const requestedScale = typeof args?.scale === 'number'
+        ? args.scale
+        : (lookMode ? LOOK_SCALE : cfg.default_scale);
+      const gridSpacing = typeof args?.grid === 'number'
+        ? args.grid
+        : (lookMode ? 0 : (Number(cfg.grid_spacing) || 0));
+      const annotate = lookMode
+        ? false
+        : (args?.annotate === true || (args?.annotate === undefined && cfg.annotate_screenshots === true));
       // max_elements: 0 is a deliberate "do not enumerate" (saves the UI Automation
-      // pass on a window with a huge tree).
+      // pass on a window with a huge tree). look mode implies it unless the caller
+      // asks for refs explicitly.
       const rawMax = Number(args?.max_elements);
       const maxElements = Number.isFinite(rawMax) && rawMax <= 0
         ? 0
-        : (Number.isFinite(rawMax) ? Math.max(1, Math.min(200, Math.trunc(rawMax))) : 60);
+        : (Number.isFinite(rawMax) ? Math.max(1, Math.min(200, Math.trunc(rawMax))) : (lookMode ? 0 : 60));
 
       // One process does the whole thing: enumerate the controls, capture, draw.
       // Splitting capture from enumeration into two PowerShell starts cost an
@@ -490,6 +515,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         screen_per_image: Array.isArray(res.screen_per_image) ? res.screen_per_image : [1, 1],
         element_count: elements.length,
         elements_skipped: maxElements === 0,
+        purpose: lookMode ? 'look' : 'inspect',
         labeled: Number(res.labeled) || 0,
         median_element_h: Number(res.median_element_h) || 0,
         label_font_pt: Number(res.label_font_pt) || 0,

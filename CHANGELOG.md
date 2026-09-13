@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.3.25 (`purpose: "look"` — the cheap way to just see the screen)
+
+Prompted by measuring what a "read the screen" call actually costs across the tool boundary.
+
+- **New `purpose` parameter on `computer_screenshot`.** `"look"` means "just show me the screen"
+  and turns on the whole cheap recipe at once: no element enumeration, a JPEG instead of a PNG, and
+  scale 0.35. `"inspect"` (the default) keeps the refs and the exact coordinate mapping.
+
+  Why a parameter instead of writing the recipe in the docs: it is **four** settings, and the
+  documented version was usually half-followed. Measured on this machine:
+
+  | | capture cost | frame handed to the vision model |
+  | --- | --- | --- |
+  | default `inspect` | 1075–1150 ms | 135 KB PNG, 1920x1080 |
+  | `purpose: "look"` | **514 ms** | **23 KB JPEG, 672x378** |
+
+  The enumeration alone is half the capture — it is a full UI Automation pass, and on a Chromium
+  window it was measured at ~600 ms on its own. Nothing needs it when no click is being aimed.
+
+- **New guards `A11` / `A12`**: `look` must really skip the enumeration and come back as a small
+  JPEG, and it must really be faster than the default. The second one is the point — a "fast path"
+  that is not measurably faster is just a second name for the same thing.
+
+Also recorded, because it was assumed rather than measured: **lowering the subagent reasoning effort
+to `low` did NOT make a screen read faster** (21 s against 20 s at default effort). A bare subagent
+that calls no tool at all already costs **11 s** to spawn, so half the round trip is fixed overhead
+and the thinking is not the bottleneck. What does work, measured: **reusing one warm subagent** for
+repeated looks — the second look cost **6 s**, about 3.3x faster than spawning a fresh one.
+
 ## 0.3.24 (gestures: the press had no duration, and nothing said so)
 
 Found by re-running the 4399 Gomoku game that defeated an earlier attempt, and then verifying the

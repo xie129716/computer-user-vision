@@ -1,6 +1,6 @@
 {
     "name":  "computer-user",
-    "version":  "0.3.10",
+    "version":  "0.3.11",
     "description":  "Codex-style computer use for DeepSeek Harness (DSH): read the screen and drive the mouse \u0026 keyboard. Attaches the screenshot as a real image for vision-capable models (e.g. DeepSeek-V41-Flash) and falls back to a PNG path for text-only models. Windows.",
     "type":  "module",
     "main":  "src/index.js",

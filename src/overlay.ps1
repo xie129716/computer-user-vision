@@ -76,6 +76,8 @@ public class CUOverlayNative {
   [DllImport("user32.dll")] public static extern bool SetLayeredWindowAttributes(IntPtr h, uint key, byte alpha, uint flags);
   [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr LoadCursor(IntPtr inst, int id);
   [DllImport("user32.dll")] public static extern bool GetCursorInfo(ref CURSORINFO ci);
 
@@ -565,7 +567,19 @@ $banner.add_Shown({
   $timer.Start()
 })
 
+# WinForms' Show() ACTIVATES the window, and at this point WS_EX_NOACTIVATE has
+# not been applied yet - that happens in the banner's Shown handler, because the
+# style can only be set once the handle exists. The frame is a full-screen
+# TOPMOST window, so the indicator used to seize the foreground the instant it
+# appeared: focus was stolen from whatever the user was typing in, and
+# computer_activate_window reported failure because its success check compares
+# the foreground window against the requested one and found the overlay instead.
+# Remember who had focus and hand it straight back.
+$previousForeground = [CUOverlayNative]::GetForegroundWindow()
 foreach ($f in @($frame, $halo)) { $f.Show() }
+if ($previousForeground -ne [IntPtr]::Zero) {
+  [CUOverlayNative]::SetForegroundWindow($previousForeground) | Out-Null
+}
 $timer.Start()
 
 try {

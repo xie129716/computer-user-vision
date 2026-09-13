@@ -761,7 +761,15 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
       else if (typeof args?.title === 'string' && args.title.trim() !== '') payload.title = args.title.trim();
       else throw new Error('computer_activate_window: 需要 hwnd / pid / title 之一');
       const res = await ctxPs(payload, exec);
-      return { requested: res.requested, foreground: describeWindow(res.foreground) };
+      const out = { requested: res.requested, foreground: describeWindow(res.foreground) };
+      // "The window never came forward" is a RESULT, not an error: report it with
+      // the foreground record and the hint. Throwing here only produced a generic
+      // PowerShell failure message with none of that detail.
+      if (res.activated === false) {
+        out.activated = false;
+        if (typeof res.hint === 'string' && res.hint !== '') out.hint = res.hint;
+      }
+      return out;
     },
   };
 

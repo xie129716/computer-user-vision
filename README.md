@@ -112,6 +112,12 @@ stop appears without a page reload, and clicking it performs the re-approval.
 The indicator is deliberately a separate process with a heartbeat file: it keeps rendering and stays
 clickable even if the agent loop stalls, and it removes itself if the host dies.
 
+It also never takes the foreground. WinForms' `Show()` activates a window, so the full-screen frame
+used to become the foreground window the instant it appeared — stealing focus from whatever you were
+typing in, and making `computer_activate_window` report failure, because its success check compares
+the foreground window against the requested one and kept finding the overlay. It now records who had
+focus before appearing and hands it straight back.
+
 ### The coordinate problem (the part that actually bites)
 
 The host tells a model the **preview dimensions** of an image but never how to get back to desktop

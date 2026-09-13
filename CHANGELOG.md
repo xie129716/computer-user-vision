@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.3.11 (the indicator stops stealing focus; activation failures stop lying)
+
+Both defects surfaced while driving a real HTML5 game on 4399, and each one hid the other.
+
+- **The control indicator seized the foreground the moment it appeared.** `overlay.ps1` showed the
+  full-screen, topmost frame and halo with WinForms' `Show()` — which *activates* — while
+  `WS_EX_NOACTIVATE` is only applied later, in the banner's `Shown` handler, because a window style
+  cannot be set before its handle exists. So the overlay became the foreground window on every
+  first appearance: focus was taken from whatever the user was typing in, and
+  `computer_activate_window` reported failure because its success check compares the foreground
+  window against the requested one and kept finding the overlay instead. The overlay now records
+  the foreground window before showing and hands it straight back. Verified: with the indicator
+  running (fresh heartbeat, process alive) the foreground stays the application, not the overlay.
+
+- **A failed activation threw away every useful detail.** `context.ps1` returned `ok: $false` when
+  the requested window did not come forward, but with no `error` field — and `ps.js` rejects on a
+  false `ok`, so all the caller ever saw was a bare *"PowerShell 执行失败"*. The foreground record
+  and the hint the script had already built ("a UWP or privileged window may be holding it; retrying
+  usually works, or click its title bar") were built and then discarded. Activation now reports
+  `ok: $true` with a separate `activated` flag, and `computer_activate_window` turns that into
+  `activated: false` plus the hint instead of throwing.
+
+- **`describeWindow` only assigns present fields**, the same lossless-JSON rule `describeElement`
+  already followed: a single `undefined` property makes the harness discard the entire tool result.
+
+Acceptance evidence for this release: `Ctrl+Alt+Esc` and the banner's Stop button each wrote the
+correct stop marker with the indicator exiting cleanly; the mode gate refused the next call and
+named the cause; the chat switch showed the amber "stopped by you" state within one poll interval;
+a Notepad round-trip (type → `Ctrl+A`/`Ctrl+C` → clear → `Ctrl+V`) restored exactly the copied
+text; `computer_scroll` advanced 5 notches = exactly 15 lines and returned to the identical line; a
+two-line `computer_drag` selection landed its endpoints on the predicted rows to the character; and
+in a live 4399 gomoku game the board was read back from pixels to confirm the stones actually
+landed.
+
 ## 0.3.10 (honest `activated_only` advice)
 
 `computer_click` flags `activated_only` when the foreground window changed and the click landed

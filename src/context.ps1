@@ -261,7 +261,13 @@ switch ($action) {
     $fg = [CUContext]::Foreground()
     $succeeded = ($fg -eq $target)
     $out = @{
-      ok         = $succeeded
+      # The action RAN; whether the window actually came forward is reported
+      # separately as `activated`. Returning ok:$false here threw this whole
+      # payload away instead: ps.js rejects on a false ok, and with no `error`
+      # field the caller saw only a generic "PowerShell failed" - discarding the
+      # foreground record and the hint below, which are the useful parts.
+      ok         = $true
+      activated  = $succeeded
       requested  = $target.ToInt64()
       foreground = (WindowRecord $fg)
     }

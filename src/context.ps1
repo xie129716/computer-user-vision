@@ -31,6 +31,8 @@ public class CUContext {
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
   [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr h, EnumProc cb, IntPtr p);
   [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr h);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out CU_RECT r);
   [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int i);
@@ -39,6 +41,12 @@ public class CUContext {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  public const uint SWP_NOSIZE = 0x1;
+  public const uint SWP_NOMOVE = 0x2;
+  public const uint SWP_NOZORDER = 0x4;
+  public const uint SWP_NOACTIVATE = 0x10;
+  public const uint SWP_SHOWWINDOW = 0x40;
   [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool f);
   [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
   delegate bool EnumProc(IntPtr h, IntPtr p);
@@ -59,11 +67,32 @@ public class CUContext {
   public static IntPtr Foreground() { return GetForegroundWindow(); }
   public static uint ForegroundThread() { uint pid; return GetWindowThreadProcessId(GetForegroundWindow(), out pid); }
 
+  /**
+   * Show a UWP app's real content window.
+   *
+   * A packaged app is an `ApplicationFrameWindow` owned by ApplicationFrameHost
+   * whose actual content is a `Windows.UI.Core.CoreWindow` CHILD owned by a
+   * different process. Showing the frame alone leaves the app invisible: the
+   * Calculator reported SetForegroundWindow success and GetForegroundWindow
+   * agreed, while nothing was on screen. Non-UWP windows have no such child.
+   */
+  static void RevealUwpContent(IntPtr parent) {
+    EnumChildWindows(parent, (child, p) => {
+      var sb = new StringBuilder(128);
+      GetClassName(child, sb, sb.Capacity);
+      if (sb.ToString() == "Windows.UI.Core.CoreWindow" && !IsWindowVisible(child)) {
+        ShowWindow(child, 5); /* SW_SHOW */
+      }
+      return true;
+    }, IntPtr.Zero);
+  }
+
   /** Focus a window the way the plugin's smoke test does: attach to the current
       foreground thread first, otherwise Windows refuses the foreground change. */
   public static bool Activate(IntPtr h) {
     if (h == IntPtr.Zero) return false;
     if (IsIconic(h)) ShowWindow(h, 9); /* SW_RESTORE */
+    RevealUwpContent(h);
     uint fgTid = ForegroundThread();
     uint myTid = GetCurrentThreadId();
     bool attached = false;
@@ -71,6 +100,10 @@ public class CUContext {
       if (fgTid != 0 && fgTid != myTid) attached = AttachThreadInput(myTid, fgTid, true);
       BringWindowToTop(h);
       ShowWindow(h, 5); /* SW_SHOW */
+      /* ShowWindow alone can be ignored for a window whose thread has no
+         activation rights, so force the visibility bit as well. */
+      SetWindowPos(h, IntPtr.Zero, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
       bool ok = SetForegroundWindow(h);
       return ok;
     } finally {
@@ -221,12 +254,24 @@ switch ($action) {
     # conversion error instead of saying that nothing matched.
     if ($null -eq $target -or $target -eq [IntPtr]::Zero) { Emit @{ ok = $false; error = "no matching window (not found by hwnd/pid/title)" } }
     [CUContext]::Activate($target) | Out-Null
-    Start-Sleep -Milliseconds 180
-    Emit @{
-      ok         = $true
+    Start-Sleep -Milliseconds 220
+    # Report what ACTUALLY happened. This used to hard-code ok:true, so a failed
+    # activation was indistinguishable from a successful one - the caller only
+    # found out by comparing the returned foreground itself.
+    $fg = [CUContext]::Foreground()
+    $succeeded = ($fg -eq $target)
+    $out = @{
+      ok         = $succeeded
       requested  = $target.ToInt64()
-      foreground = (WindowRecord ([CUContext]::Foreground()))
+      foreground = (WindowRecord $fg)
     }
+    if (-not $succeeded) {
+      # ASCII only: Windows PowerShell 5.1 decodes a BOM-less .ps1 as ANSI, so any
+      # non-ASCII literal here would arrive as mojibake - and a mangled byte can
+      # even break the string terminator and stop the script from parsing.
+      $out.hint = "activation did not take effect: the requested window never became foreground (a UWP or privileged window may be holding it). Retrying usually works, or click its title bar instead."
+    }
+    Emit $out
   }
 
   default { Fail("unknown action: $action") }

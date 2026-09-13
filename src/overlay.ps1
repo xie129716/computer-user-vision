@@ -145,15 +145,24 @@ $halo.TransparencyKey = [System.Drawing.Color]::Magenta
 $halo.SetBounds(0, 0, $haloSize, $haloSize)
 $halo.add_Paint({
   param($sender, $e)
-  $e.Graphics.SmoothingMode = 'AntiAlias'
+  # TransparencyKey cannot express soft alpha: a semi-transparent pixel COMPOSITES
+  # with the key colour instead of vanishing, so alpha-graded glow rings came out
+  # as pink residue that the key never removed. Grade the ring BRIGHTNESS with
+  # fully opaque colours instead, and keep edges hard so anti-aliasing cannot
+  # fringe against the key colour either.
+  $e.Graphics.SmoothingMode = 'None'
   $c = $script:haloColor
   $mid = $haloSize / 2
   for ($i = 4; $i -ge 1; $i--) {
-    $alpha = [int](34 * (5 - $i) / 4)
-    $pen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb($alpha, $c.R, $c.G, $c.B), 2.0)
+    $outerness = ($i - 1) / 3.0                    # 1 = outermost, 0 = innermost
+    $dim = 0.30 + 0.70 * (1 - $outerness)
+    $col = [System.Drawing.Color]::FromArgb(
+      255,
+      [int]($c.R * $dim), [int]($c.G * $dim), [int]($c.B * $dim))
+    $pen = New-Object System.Drawing.Pen($col, 2.0)
     try { $e.Graphics.DrawEllipse($pen, $mid - ($i * 9), $mid - ($i * 9), $i * 18, $i * 18) } finally { $pen.Dispose() }
   }
-  $core = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(210, $c.R, $c.G, $c.B), 2.2)
+  $core = New-Object System.Drawing.Pen($c, 2.2)
   try { $e.Graphics.DrawEllipse($core, $mid - 8, $mid - 8, 16, 16) } finally { $core.Dispose() }
 })
 [void]$forms.Add($halo)

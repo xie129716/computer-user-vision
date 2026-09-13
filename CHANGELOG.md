@@ -27,6 +27,13 @@ with the previous build — not from speculation.
   recoloured, so the halo is what changes), and a top banner naming the
   controller with a Stop button. New `src/overlay.js` owns its lifetime and a
   heartbeat file that makes the overlay self-reap if the host dies.
+- **Halo colour fix**: the glow rings were drawn with per-ring alpha, but a
+  `TransparencyKey` window cannot express alpha — a semi-transparent pixel
+  composites with the key colour instead of vanishing, so the rings survived
+  the key as pink residue instead of fading out. Rings are now fully opaque
+  with graded BRIGHTNESS and hard edges. Because the indicator is a fresh
+  process per takeover, this fix applies on the next takeover with no host
+  restart.
 - **User stop is absolute**: the banner button and the global Ctrl+Alt+Esc
   hotkey both write a stop marker; the mode gate then refuses every computer_*
   tool with a message naming the cause, until the user re-approves with

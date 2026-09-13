@@ -59,6 +59,7 @@ function rememberElements(hwnd, title, elements) {
     map.set(key, {
       ref: key,
       name: typeof el.name === 'string' ? el.name : '',
+      nameTruncated: el.name_truncated === true,
       type: typeof el.type === 'string' ? el.type : '',
       automationId: typeof el.automationId === 'string' ? el.automationId : '',
       rect: Array.isArray(el.rect) ? el.rect : null,
@@ -105,6 +106,7 @@ function elementLine(elements, limit = 45) {
     const bits = [String(el.ref)];
     if (el.type) bits.push(el.type);
     if (el.name) bits.push(`"${el.name}"`);
+    if (el.name_truncated === true) bits.push('(name truncated)');
     if (Array.isArray(el.patterns) && el.patterns.length > 0) bits.push(`{${el.patterns.join(',')}}`);
     if (el.enabled === false) bits.push('(disabled)');
     parts.push(bits.join(' '));
@@ -300,6 +302,10 @@ function screenshotEnvelope(value) {
   if (list) {
     lines.push(list);
     lines.push('Address any of these by ref — computer_click {ref: "e12"} — or by visible text, computer_click {name: "<text>"}. That needs no pixel arithmetic and survives the window moving. Use screen_mapping only for something that is not in the list.');
+  } else if (v.elements_skipped) {
+    // Distinguished from "found nothing": the caller asked for no enumeration, so
+    // saying the window has no controls would be wrong and misleading.
+    lines.push('element enumeration was skipped for this capture (max_elements: 0), so no refs are listed; call computer_elements when you need them.');
   } else {
     lines.push('no actionable elements were found in the focused window: fall back to screen_mapping, or focus the right window first (computer_list_windows / computer_activate_window).');
   }
@@ -472,6 +478,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         // derived from the requested scale, which is only approximately right.
         screen_per_image: Array.isArray(res.screen_per_image) ? res.screen_per_image : [1, 1],
         element_count: elements.length,
+        elements_skipped: maxElements === 0,
         labeled: Number(res.labeled) || 0,
         annotated: res.annotated === true,
         ...(foreground ? { foreground } : {}),
@@ -645,6 +652,9 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
           type: hit.type,
           automationId: hit.automationId,
           rect: hit.rect,
+          // A long accessible name is truncated for display; the executor has to
+          // know so it can re-resolve the control by prefix instead of exact match.
+          name_truncated: hit.nameTruncated === true,
         };
       } else if (nameArg) {
         payload.name = nameArg;
@@ -688,6 +698,13 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         out.under_cursor = `${res.at.name ? `"${res.at.name}" ` : ''}${res.at.type ?? ''}`;
         if (res.at.matches_target === true) out.hit_confirmed = true;
         else if (res.at.matches_target === false) out.hit_confirmed = false;
+      }
+      // An action pattern is invoked ON the resolved element, so the hit is not
+      // inferred from where the pointer ended up — it is certain, and better
+      // evidence than a cursor probe. (No mouse moved, so there is no `at`.)
+      if (res.method && res.method !== 'mouse') {
+        out.hit_confirmed = true;
+        out.delivery = `uia-${res.method}`;
       }
       if (res.foreground_before || res.foreground_after) {
         out.foreground_before = res.foreground_before ?? '';
@@ -741,7 +758,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
       if (refArg) {
         const hit = lookupRef(refArg);
         if (!hit) throw new Error(`computer_type: 引用 ${refArg} 不认识，请先重新 computer_screenshot / computer_elements`);
-        payload.target = { hwnd: hit.hwnd, name: hit.name, type: hit.type, automationId: hit.automationId, rect: hit.rect };
+        payload.target = { hwnd: hit.hwnd, name: hit.name, type: hit.type, automationId: hit.automationId, rect: hit.rect, name_truncated: hit.nameTruncated === true };
       } else if (typeof args?.name === 'string' && args.name.trim()) {
         payload.name = args.name.trim();
       }

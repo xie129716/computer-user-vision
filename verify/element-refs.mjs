@@ -94,6 +94,18 @@ const envelope = tool('computer_screenshot').output.render({}, shot).find((b) =>
 check('A5 the envelope hands the refs to the caller', /elements \(\d+\):/.test(envelope));
 check('A6 the envelope tells the caller to click by ref', /computer_click \{ref/.test(envelope));
 
+// An accessible name is unbounded: Notepad's edit control reports the ENTIRE
+// document as its name (measured at 11800 characters for a 200-line file), and a
+// click result carried all of it. Every emitted name is capped and every truncated
+// one is flagged, so one hostile window cannot inflate a tool result to megabytes.
+const NAME_CAP = 100;
+const longestName = elements.reduce((m, el) => Math.max(m, (el.name ?? '').length), 0);
+check('A6b emitted element names are capped', longestName <= NAME_CAP,
+  `longest name ${longestName} chars (cap ${NAME_CAP}); ${elements.filter((el) => el.name_truncated).length} flagged as truncated`);
+const elementBytes = JSON.stringify(elements).length;
+check('A6c the element list stays a sane size', elementBytes < 40000,
+  `${elementBytes} bytes for ${elements.length} element(s)`);
+
 const listed = await tool('computer_elements').execute({}, exec);
 const listedNames = (listed.elements ?? []).map((el) => `${el.ref}:${el.name}`);
 const shotNames = elements.map((el) => `${el.ref}:${el.name}`);

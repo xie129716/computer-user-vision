@@ -518,9 +518,27 @@ function Get-RefList {
   return @{ ok = $true; rows = $sorted; scanned = $scanned; total = $found.Count; ms = $sw.ElapsedMilliseconds; fetch_ms = $fetchMs }
 }
 
+# An accessible name is not bounded: Notepad's edit control reports the ENTIRE
+# document as its name (measured at 11800 characters for a 200-line file), and a
+# multi-megabyte document would be carried in full through a tool result. Every
+# place a name is emitted goes through this.
+function Short-Name($value, [int]$max = 100) {
+  $t = [string]$value
+  if ($t.Length -le $max) { return $t }
+  return $t.Substring(0, $max)
+}
+
 function Element-Brief($row, [int]$index) {
   $o = [ordered]@{ ref = "e$index" }
-  if ($row.name) { $o.name = $row.name }
+  $nm = [string]$row.name
+  if ($nm.Length -gt 100) {
+    $o.name = $nm.Substring(0, 100)
+    # Say so, because re-resolution then has to match the stored prefix instead of
+    # the whole name.
+    $o.name_truncated = $true
+  } elseif ($nm) {
+    $o.name = $nm
+  }
   $o.type = $row.type
   if ($row.automationId) { $o.automationId = $row.automationId }
   $o.rect = $row.rect
@@ -611,6 +629,13 @@ function Resolve-Target {
     if ($wantId) { $cand = @($rows | Where-Object { $_.automationId -eq $wantId }) }
     if ($cand.Count -eq 0 -and $wantName -and $wantType) { $cand = @($rows | Where-Object { $_.name -eq $wantName -and $_.type -eq $wantType }) }
     if ($cand.Count -eq 0 -and $wantName) { $cand = @($rows | Where-Object { $_.name -eq $wantName }) }
+    # A truncated name is a PREFIX of the real one, so match it as a prefix rather
+    # than giving up. Without this, a ref to a control whose accessible name is
+    # long (Notepad's edit control reports the whole document) would be
+    # unresolvable the moment the brief truncated it.
+    if ($cand.Count -eq 0 -and $wantName -and $t.name_truncated -eq $true) {
+      $cand = @($rows | Where-Object { ([string]$_.name).StartsWith($wantName) })
+    }
     if ($cand.Count -eq 0) { continue }
     $pick = $cand[0]
     if ($cand.Count -gt 1) {
@@ -683,6 +708,10 @@ function Do-Click {
   $method = 'mouse'
   $point = $null
   $info = [ordered]@{}
+  # The resolved control's FULL name, kept out of the emitted record: names are
+  # emitted truncated (Notepad's edit control reports the whole document), but the
+  # hit test below has to compare against what UIA actually reports.
+  $matchName = ''
 
   if ($null -ne $cfg.target) {
     $r = Resolve-Target $cfg.target
@@ -690,7 +719,8 @@ function Do-Click {
       return @{ ok = $false; error = "target element not found on screen any more (it may have been closed or replaced); take a fresh computer_screenshot" }
     }
     $row = $r.row
-    $info.name = $row.name
+    $matchName = [string]$row.name
+    $info.name = Short-Name $row.name
     $info.type = $row.type
     $info.rect = $row.rect
     $info.hwnd = $r.hwnd.ToInt64()
@@ -721,7 +751,8 @@ function Do-Click {
       return @{ ok = $true; ambiguous = $true; matches = $alts; hint = "$(@($f.rows).Count) elements match '$($cfg.name)'; click one by ref or coordinate" }
     }
     $row = @($f.rows)[0]
-    $info.name = $row.name
+    $matchName = [string]$row.name
+    $info.name = Short-Name $row.name
     $info.type = $row.type
     $info.rect = $row.rect
     if ($cfg.no_invoke -ne $true) {
@@ -774,13 +805,15 @@ function Do-Click {
       if ($null -ne $el) {
         $r = $el.Current.BoundingRectangle
         $at = [ordered]@{ }
-        if ($el.Current.Name) { $at.name = $el.Current.Name }
+        if ($el.Current.Name) { $at.name = Short-Name $el.Current.Name }
         $at.type = $el.Current.LocalizedControlType
         if ($el.Current.AutomationId) { $at.automationId = $el.Current.AutomationId }
         $at.pid = [int]$el.Current.ProcessId
         $at.rect = @([int]$r.X, [int]$r.Y, [int]([int]$r.X + [int]$r.Width), [int]($r.Y + [int]$r.Height))
         $out.at = $at
-        $out.at.matches_target = ($null -ne $info.name -and $info.name -eq $el.Current.Name)
+        # Exact compare against the FULL name, which the emitted record no longer
+        # carries once it is longer than the truncation limit.
+        $out.at.matches_target = ($matchName -ne '' -and $matchName -eq $el.Current.Name)
       }
     } catch { }
   }

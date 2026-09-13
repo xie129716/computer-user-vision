@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.3.21 (an accessible name has no size limit)
+
+Found by scrolling, dragging and window-switching through real applications.
+
+- **An element's accessible name is unbounded, and one window made a tool result
+  12.6 KB.** Notepad's edit control reports the **entire document** as its name —
+  measured at **11800 characters** for a 200-line file. The element list, the
+  click's `target` and the click's `under_cursor` each carried it in full; a
+  multi-megabyte document would have been carried in full too, on every call.
+  Names are now capped at 100 characters at all three emission sites and a
+  truncated one is flagged (`name_truncated`), and re-resolution matches the
+  stored prefix instead of demanding an exact whole-name match — otherwise a ref
+  to that very control would have stopped resolving the moment it was truncated.
+  Measured effect: the click result went from **12652 bytes to 554**.
+
+- **`max_elements: 0` reported "no actionable elements were found"**, which is a
+  different and misleading claim from "enumeration was skipped as asked". The
+  envelope now says which one happened.
+
+- **`hit_confirmed` was missing for UI-Automation deliveries.** Invoking a
+  control's own action is *stronger* evidence than a cursor probe — the click was
+  performed on the resolved element, not inferred from where the pointer ended up —
+  but no mouse moves, so no `at` probe runs and the result looked unverified. An
+  action-pattern delivery now reports `hit_confirmed: true` and
+  `delivery: "uia-invoke"` (or toggle/select/expand).
+
+Acceptance evidence for this release:
+scrolling 5 notches moved the view exactly 15 lines and 5 back restored it line-for-line;
+a drag from screen x=300 on line 1 to x=300 on line 5 selected exactly the characters between
+those two points (`NE-001… / 002 / 003 / 004 / LI`, both endpoints character-exact, verified through
+the clipboard rather than by eye); and 9 consecutive `computer_activate_window` calls across
+Notepad, a packaged Calculator and Explorer all landed on the intended window (9/9, 655 ms average).
+
 ## 0.3.20 (four defects the acceptance run found)
 
 Driving real applications — a WinUI Calculator, Notepad, and a 22 px toolbar-density target board —

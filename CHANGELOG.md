@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.3.22 (a big window, and a bound that saved nothing)
+
+Found by pointing the plugin at a 4000-control page in Chromium and at its own dense annotation.
+
+- **The element scan was capped at 2500, and the cap was buying nothing.** On a
+  **4054-element** Chromium tree, asking for 200 controls returned **71** — the scan stopped early
+  and the difference was reported as nothing at all. Measured cost: the single cached property pass
+  is **~605 ms** and happens regardless, while filtering **2500** elements added **~13 ms**. The cap
+  was therefore truncating the answer to save an overhead of roughly 5 microseconds per element.
+  Raised to 20000 (a runaway guard, not a budget); the same request now scans all 4054 and returns
+  **83**, the true number of addressable controls.
+
+- **Enumeration now reports what the tree actually is.** `total`, `fetch_ms`, `capped`,
+  `limited_by_max` and `limited_by_scan` distinguish "this window has eight controls" from "the list
+  was cut short", and say *which* limit cut it. Without them a caller cannot tell a small window from
+  a large one.
+
+- **Annotation chips were a fixed 15 pt, which is taller than a toolbar button.** A 22 px control is
+  only 11 px tall at 0.5 scale, so every label had to be placed above its control, collided with the
+  row above, and was silently dropped: **6 of 40 labels drawn** on a dense page, leaving 34 outlines
+  with no way to tell which ref belonged to which control. Chips are now sized from the **median
+  control height** (measured: chip height ≈ 2 × point size, floor 7 pt below which a label is not
+  reliably readable). The dense page went **6 → 14** labelled and the Calculator **31 of 40**.
+  Where that is still not enough the result says so and gives `median_element_h`, because the honest
+  answer is that a tight list **cannot** be fully labelled at a given capture scale — 22 px pitch at
+  0.5 scale would need a 5.5 pt font. The remedy is more pixels (`region` + `scale:1`), not a
+  smaller font, and the skill document now says that.
+
+Acceptance evidence for this release, on a local 4000-button page in Edge:
+`computer_click {name: "BTN-0005"}` — a control that was **not** in the refs returned by the
+preceding enumeration — was delivered as `method: "invoke"`, `hit_confirmed: true`, and the page's
+own handler ran (window title became `CU-CLICKED-BTN-0005`), which is end-to-end proof rather than a
+coordinate claim. Scrolling 40 notches moved the addressable set from `BTN-0001…0038` to
+`BTN-0038…0080` (42 new, the early ones gone, matching Chromium dropping off-screen nodes), and
+clicking one of the newly reachable buttons set the title to `CU-CLICKED-BTN-0039`.
+
 ## 0.3.21 (an accessible name has no size limit)
 
 Found by scrolling, dragging and window-switching through real applications.

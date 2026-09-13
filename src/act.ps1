@@ -417,7 +417,13 @@ function Get-AEProp([string]$name) {
 }
 
 function Get-RefList {
-  param([IntPtr]$Root, [int]$MaxOut = 80, [int]$MaxScan = 2500, [switch]$IncludeStatic)
+  # MaxScan is a runaway guard, not a budget. Measured on a 4054-element Chromium
+  # tree: the one cached property pass costs ~605 ms, while filtering all 2500
+  # scanned elements added only ~13 ms. The old 2500 cap therefore truncated the
+  # result set (a request for 200 controls came back with 71) to save an overhead
+  # that does not exist. The dominant cost is the cached pass, which happens either
+  # way, so the guard is set high enough to cover any realistic tree.
+  param([IntPtr]$Root, [int]$MaxOut = 80, [int]$MaxScan = 20000, [switch]$IncludeStatic)
   try { Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, WindowsBase -ErrorAction Stop }
   catch { return @{ ok = $false; reason = 'UIAutomation assembly unavailable' } }
   $rootEl = $null
@@ -446,9 +452,10 @@ function Get-RefList {
 
   $rows = New-Object System.Collections.Generic.List[object]
   $scanned = 0
+  $scanCapped = $false
   foreach ($el in $found) {
     $scanned++
-    if ($scanned -gt $MaxScan) { break }
+    if ($scanned -gt $MaxScan) { $scanCapped = $true; break }
     try {
       $ci = $el.Cached
       if ($ci.IsOffscreen) { continue }
@@ -515,7 +522,7 @@ function Get-RefList {
   # Deterministic reading order (top-to-bottom, then left-to-right) so a ref is
   # reproducible, and so a human reading the annotated image sees a sane list.
   $sorted = @($rows | Sort-Object @{ Expression = { [int]($_.rect[1] / 10) } }, @{ Expression = { [int]$_.rect[0] } })
-  return @{ ok = $true; rows = $sorted; scanned = $scanned; total = $found.Count; ms = $sw.ElapsedMilliseconds; fetch_ms = $fetchMs }
+  return @{ ok = $true; rows = $sorted; scanned = $scanned; total = $found.Count; ms = $sw.ElapsedMilliseconds; fetch_ms = $fetchMs; scan_capped = $scanCapped }
 }
 
 # An accessible name is not bounded: Notepad's edit control reports the ENTIRE
@@ -901,6 +908,17 @@ switch ($action) {
     Emit @{
       ok = $true; available = $true; count = $briefs.Count
       scanned = $list.scanned; ms = $list.ms
+      # How big the tree actually is, and how long the one cached property pass
+      # took. Without these a caller cannot tell "this window has 8 controls" from
+      # "the list was capped at 60 out of 4000", which is the difference between a
+      # small window and a page that needs scrolling.
+      total = $list.total; fetch_ms = $list.fetch_ms
+      capped = ($list.total -gt $briefs.Count)
+      # Two different reasons the list can be shorter than the caller asked for:
+      # the per-call maximum, or the runaway guard. Saying which one matters when
+      # the caller is deciding whether to re-ask with a bigger number.
+      limited_by_max = ($briefs.Count -ge $maxOut)
+      limited_by_scan = ($list.scan_capped -eq $true)
       window = (WindowRecord $h)
       elements = $briefs.ToArray()
     }
@@ -1153,6 +1171,7 @@ switch ($action) {
       $font = $null; $gPen = $null; $gInk = $null
       $chip = $null; $aInk = $null; $aPen = $null; $aPen2 = $null; $aFont = $null
       $labeledCount = 0
+      $medianH = 0.0; $aFontPt = 0
       try {
         $grid = 0
         if ($null -ne $cfg.grid) { $grid = [int]$cfg.grid }
@@ -1197,7 +1216,35 @@ switch ($action) {
           $aInk = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 0, 0, 0))
           $aPen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(235, 255, 40, 40), 2)
           $aPen2 = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(200, 0, 110, 255), 3)
-          $aFont = New-Object System.Drawing.Font('Consolas', 15, [System.Drawing.FontStyle]::Bold)
+          # Size the chip to the controls it labels. A fixed 15 pt chip is ~28 px
+          # tall, taller than a 22 px toolbar button, so on a uniform dense list
+          # every label had to be placed above its control, collided with the row
+          # above, and was dropped -- measured 6 of 40 labels drawn on a 38-button
+          # page, leaving 34 outlines with no way to tell which ref was which.
+          # Sizing to the median control height lets the label sit inside the
+          # control and the list stay fully labelled.
+          $heights = New-Object System.Collections.Generic.List[double]
+          foreach ($a in $annotated) {
+            $rect0 = $a.row.rect
+            $h0 = ([int]$rect0[3] - [int]$rect0[1]) * $scaleY
+            if ($h0 -ge 3) { $heights.Add($h0) }
+          }
+          $medianH = 0.0
+          if ($heights.Count -gt 0) {
+            $sortedH = @($heights | Sort-Object)
+            $medianH = [double]$sortedH[[int][Math]::Floor($sortedH.Count / 2)]
+          }
+          $aFontPt = 15
+          if ($medianH -gt 0) {
+            # Measured on Consolas Bold: the chip is about 2 px tall per point
+            # (6 pt -> 12 px, 9 pt -> 18 px, 15 pt -> 28 px). Below 7 pt the label
+            # stops being reliably readable, so the floor is 7 rather than a size
+            # that would fit but could not be read.
+            $aFontPt = [int][Math]::Round(($medianH - 2) / 2.0)
+            if ($aFontPt -lt 7) { $aFontPt = 7 }
+            if ($aFontPt -gt 15) { $aFontPt = 15 }
+          }
+          $aFont = New-Object System.Drawing.Font('Consolas', $aFontPt, [System.Drawing.FontStyle]::Bold)
           $drawn = New-Object System.Collections.Generic.List[object]
           foreach ($a in $annotated) {
             $r = $a.row.rect
@@ -1220,7 +1267,10 @@ switch ($action) {
             # short to hold the chip does it go above, and it is skipped entirely
             # if that would collide with a chip already drawn.
             $lx = $l + 1
-            if ($ht -ge ($chh + 6)) {
+            # "Inside" only needs the chip to fit, not to fit with slack: the chip
+            # is already sized from the median control height, so a tight fit is
+            # the normal case on a dense list.
+            if ($ht -ge ($chh - 2)) {
               $ly = $t + 1
             } else {
               $ly = $t - $chh
@@ -1269,6 +1319,11 @@ switch ($action) {
       screen_per_image = @(($capW / [double]$vw), ($capH / [double]$vh))
       annotated = ($annotated.Count -gt 0)
       labeled = $labeledCount
+      # Enough for the caller to understand WHY labels were dropped: a dense list of
+      # short controls cannot hold a readable chip at this capture scale, and the
+      # only real remedy is more pixels (region + scale), not a smaller font.
+      median_element_h = [int][Math]::Round($medianH)
+      label_font_pt = $aFontPt
       element_count = $briefs.Count
       elements = $briefs.ToArray()
       window = $annoWindow

@@ -310,7 +310,18 @@ function screenshotEnvelope(value) {
     lines.push('no actionable elements were found in the focused window: fall back to screen_mapping, or focus the right window first (computer_list_windows / computer_activate_window).');
   }
   if (v.annotated) {
-    lines.push(`annotation: ${v.labeled ?? 0} of ${v.element_count ?? 0} elements carry a readable ref label on the image; the rest collided and are outline-only, so take those from the list above.`);
+    const labeled = v.labeled ?? 0;
+    const total = v.element_count ?? 0;
+    const medH = Number(v.median_element_h) || 0;
+    const pt = Number(v.label_font_pt) || 0;
+    if (labeled >= total) {
+      lines.push(`annotation: all ${total} elements are labelled on the image.`);
+    } else {
+      lines.push(`annotation: ${labeled} of ${total} elements carry a readable ref label; the rest are`
+        + ' outline-only because their labels collided.'
+        + (medH > 0 ? ` The median control is ${medH} px tall in this image and a readable chip needs about ${Math.max(12, 2 * pt)} px.` : '')
+        + ' A dense list of short controls cannot be fully labelled at this capture scale — capture a region with scale:1 for more pixels, or just use the list above.');
+    }
   }
   return lines.join('\n');
 }
@@ -480,6 +491,8 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         element_count: elements.length,
         elements_skipped: maxElements === 0,
         labeled: Number(res.labeled) || 0,
+        median_element_h: Number(res.median_element_h) || 0,
+        label_font_pt: Number(res.label_font_pt) || 0,
         annotated: res.annotated === true,
         ...(foreground ? { foreground } : {}),
         ...(elements.length > 0 ? { elements } : {}),

@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.3.23 (a click that could not be aimed was still sent)
+
+Found by driving a real application end to end: a VPN client, the Windows desktop, and a browser
+session through Amazon — mouse and keyboard only, no shortcuts.
+
+- **A MIS-AIMED CLICK WAS STILL DELIVERED.** The caller asked for `[900,712]`; the pointer never
+  moved from `[787,627]`; the tool reported the mismatch — and then pressed the mouse anyway, so the
+  click landed on a different control. An unaimable click is not a degraded click, it is a **wrong**
+  click. `click`, `scroll`, `drag` and `move` now abort **without sending a single event** when the
+  pointer cannot be placed, and they name what blocked it.
+
+  The trigger, measured: the target window belonged to an **elevated** process while the host did
+  not. Windows UIPI refuses `SetCursorPos` from a lower integrity level (it returns FALSE) and
+  silently discards `SendInput`, so the pointer is pinned. The result now says exactly that, with
+  the foreground window, its pid, and the remedy — and `SetCursorPos` returning false is what
+  distinguishes "refused" from "the move did not take".
+
+- **A minimized window was described by its 146x21 sliver.** While minimized, a maximized
+  1920x1040 browser reports a DWM extended frame of **146x21**, which is not where anything is —
+  and a listing filtered by size then dropped the window entirely, so "bring Edge to the front"
+  could not even find Edge. Minimized windows now report their **restored** geometry
+  (`GetWindowPlacement`'s `rcNormalPosition`) and set `rect_is_restored`, keeping `minimized: true`.
+
+- **"Hit confirmed" was broken for unnamed controls — in both directions.** The check compared
+  accessible names, so for an unnamed control it compared two empty strings: it asserted a hit while
+  confirming nothing. Tightening it (as the name-truncation fix in 0.3.21 did) then made an unnamed
+  control **never** confirmable — and Windows 11 Notepad exposes its whole text area with an empty
+  name, so this is a common case, not a corner. It now compares the target's rectangle with the
+  rectangle of the element actually under the cursor, with the name as a secondary signal.
+
+- **New regression guards** in `verify/element-refs.mjs`: **A10** — a window reported as minimized
+  must carry usable geometry (it exercised 8 genuinely minimized windows) — and **B2b** — the
+  pointer must really be where the click says it clicked. B2b is what caught the unnamed-control
+  regression above, immediately.
+
+Acceptance context for this release: QuickQ connected to a Tokyo node, the desktop, Edge opened from
+its desktop icon, an InPrivate window opened through Edge's own menu, a Bing search for 亚马逊, the
+Amazon home page, a search for `oui`, the sort switched to 畅销商品 (Best Sellers — Amazon has no
+literal "sales" option), the first product opened, and its review section reached by scrolling and
+screenshotted. Every step was a mouse click or a keystroke.
+
 ## 0.3.22 (a big window, and a bound that saved nothing)
 
 Found by pointing the plugin at a 4000-control page in Chromium and at its own dense annotation.

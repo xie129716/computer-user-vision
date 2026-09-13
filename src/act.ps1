@@ -186,6 +186,28 @@ public class CUAct {
     return r;
   }
   public static A_RECT RawRect(IntPtr h) { A_RECT r; GetWindowRect(h, out r); return r; }
+
+  /**
+   * Where a minimized window will be once it is restored.
+   *
+   * A minimized window's DWM extended frame is its tiny taskbar representation --
+   * measured: a maximized 1920x1040 browser reported 146x21 while minimized. That
+   * is worse than useless to a caller: it is not where anything is, and it made
+   * the window disappear from any listing filtered by size, so "bring Edge to the
+   * front" could not even find Edge. GetWindowPlacement's rcNormalPosition is the
+   * geometry the caller actually needs.
+   */
+  [StructLayout(LayoutKind.Sequential)] public struct WINDOWPLACEMENT {
+    public int length; public int flags; public int showCmd;
+    public POINT ptMinPosition; public POINT ptMaxPosition; public A_RECT rcNormalPosition;
+  }
+  [DllImport("user32.dll")] static extern bool GetWindowPlacement(IntPtr h, ref WINDOWPLACEMENT p);
+  public static A_RECT RestoredRect(IntPtr h) {
+    WINDOWPLACEMENT wp = new WINDOWPLACEMENT();
+    wp.length = Marshal.SizeOf(typeof(WINDOWPLACEMENT));
+    if (!GetWindowPlacement(h, ref wp)) return new A_RECT();
+    return wp.rcNormalPosition;
+  }
   public static A_RECT ClientBox(IntPtr h) {
     A_RECT r; GetClientRect(h, out r);
     POINT p = new POINT(); p.X = 0; p.Y = 0;
@@ -327,7 +349,14 @@ function To-U32([int]$v) { if ($v -lt 0) { return [uint32]($v + 4294967296) }; r
 # window records
 # ---------------------------------------------------------------------------
 function WindowRecord($h) {
-  $vis = [CUAct]::VisibleRect($h)
+  $minimized = [bool][CUAct]::IsIconic($h)
+  # A minimized window has no on-screen geometry to report: its DWM frame is the
+  # tiny taskbar representation (measured: a maximized browser reads 146x21).
+  # Report where it WILL be, and keep the flag, so a caller asking "where is Edge"
+  # gets an answer it can aim at instead of a 146x21 sliver that a size filter
+  # then throws away entirely.
+  $vis = if ($minimized) { [CUAct]::RestoredRect($h) } else { [CUAct]::VisibleRect($h) }
+  if (($vis.Right - $vis.Left) -le 0 -or ($vis.Bottom - $vis.Top) -le 0) { $vis = [CUAct]::VisibleRect($h) }
   $rawR = [CUAct]::RawRect($h)
   $cli = [CUAct]::ClientBox($h)
   return @{
@@ -340,7 +369,8 @@ function WindowRecord($h) {
     client_rect = @($cli.Left, $cli.Top, $cli.Right, $cli.Bottom)
     width       = $vis.Right - $vis.Left
     height      = $vis.Bottom - $vis.Top
-    minimized   = [bool][CUAct]::IsIconic($h)
+    minimized   = $minimized
+    rect_is_restored = $minimized
     foreground  = ($h -eq [CUAct]::Foreground())
     tool_window = (([CUAct]::GetWindowLong($h, -20) -band 0x80) -ne 0)
   }
@@ -698,6 +728,41 @@ function Test-ExpectWindow($expect) {
 }
 
 # ---------------------------------------------------------------------------
+# the pointer pre-flight, shared by every action that must aim first
+# ---------------------------------------------------------------------------
+# An unaimable click is not a degraded click, it is a WRONG click: the previous
+# version noticed the pointer had not reached the target, reported the mismatch,
+# and then sent the button events anyway -- so the click landed on whatever
+# happened to be under the pointer. Measured while driving an elevated VPN client
+# from a non-elevated host: the requested [900,712] became an actual click at
+# [787,627], a different control entirely.
+#
+# The commonest cause is Windows UIPI: when the foreground window belongs to a
+# higher-integrity (elevated) process, a non-elevated caller's SetCursorPos is
+# REFUSED and SendInput is silently discarded. SetCursorPos returning false is the
+# tell, and it is worth saying so, because the remedy is environmental (run the
+# host elevated, or act on a non-elevated window) rather than a retry.
+function Test-PointerPlaced([int]$x, [int]$y) {
+  $got = [CUAct]::MoveVerified($x, $y)
+  if ($got[0] -eq $x -and $got[1] -eq $y) { return $null }
+  $refused = -not [CUAct]::SetCursorPos($x, $y)
+  $fg = [CUAct]::Foreground()
+  $why = if ($refused) {
+    'The system actively refused the move, which is what Windows does when the foreground window belongs to an ELEVATED process and the host is not elevated (UIPI blocks synthetic input from a lower integrity level). Run DSH as administrator, or act on a non-elevated window.'
+  } else {
+    'The move was applied but did not take effect; retry, or aim at a different point.'
+  }
+  return [ordered]@{
+    ok = $false
+    error = "input refused: the pointer could not be moved to [$x,$y] (it is at [$($got[0]),$($got[1])]), so NO input was sent. Foreground window: '$([CUAct]::Title($fg))' (pid $([int][CUAct]::PidOf($fg))). $why"
+    refused = $refused
+    requested = @($x, $y)
+    pointer_at = $got
+    foreground = @{ title = [CUAct]::Title($fg); pid = [int][CUAct]::PidOf($fg); hwnd = $fg.ToInt64() }
+  }
+}
+
+# ---------------------------------------------------------------------------
 # the compound click
 # ---------------------------------------------------------------------------
 function Do-Click {
@@ -779,6 +844,8 @@ function Do-Click {
     if ($null -eq $point) { return @{ ok = $false; error = 'no target resolved' } }
     $x = [int]$point[0]; $y = [int]$point[1]
     $got = [CUAct]::MoveVerified($x, $y)
+    # NEVER click from the wrong place -- see Test-PointerPlaced.
+    if ($got[0] -ne $x -or $got[1] -ne $y) { return (Test-PointerPlaced $x $y) }
     Start-Sleep -Milliseconds 25
     if ($btn -eq 'right_click') { [CUAct]::Button([CUAct]::MOUSEEVENTF_RIGHTDOWN, [CUAct]::MOUSEEVENTF_RIGHTUP) }
     elseif ($btn -eq 'double_click') {
@@ -789,10 +856,6 @@ function Do-Click {
     elseif ($btn -eq 'middle_click') { [CUAct]::Button([CUAct]::MOUSEEVENTF_MIDDLEDOWN, [CUAct]::MOUSEEVENTF_MIDDLEUP) }
     else { [CUAct]::Button([CUAct]::MOUSEEVENTF_LEFTDOWN, [CUAct]::MOUSEEVENTF_LEFTUP) }
     $out.moved_to = $got
-    if ($got[0] -ne $x -or $got[1] -ne $y) {
-      $out.pointer_clamped = $true
-      $out.hint_en = "pointer requested [$x,$y] but landed at [$($got[0]),$($got[1])]"
-    }
   }
   $out.method = $method
   $out.clicked = $point
@@ -818,9 +881,25 @@ function Do-Click {
         $at.pid = [int]$el.Current.ProcessId
         $at.rect = @([int]$r.X, [int]$r.Y, [int]([int]$r.X + [int]$r.Width), [int]($r.Y + [int]$r.Height))
         $out.at = $at
-        # Exact compare against the FULL name, which the emitted record no longer
-        # carries once it is longer than the truncation limit.
-        $out.at.matches_target = ($matchName -ne '' -and $matchName -eq $el.Current.Name)
+        # Confirm the hit by GEOMETRY first, then by name.
+        #
+        # Name alone cannot do it: an unnamed control (the Windows 11 Notepad
+        # exposes its text area with an EMPTY accessible name) was matched by
+        # comparing two empty strings, which asserted "hit confirmed" while
+        # confirming nothing -- and once that comparison was tightened, an unnamed
+        # control could never be confirmed at all. The rectangle is what the click
+        # was actually aimed at, so it is the honest thing to compare.
+        $targetRect = $null
+        if ($null -ne $info.rect -and @($info.rect).Count -eq 4) { $targetRect = @($info.rect) }
+        $sameRect = $false
+        if ($null -ne $targetRect) {
+          $sameRect = ([Math]::Abs([int]$targetRect[0] - [int]$at.rect[0]) -le 2 -and
+                       [Math]::Abs([int]$targetRect[1] - [int]$at.rect[1]) -le 2 -and
+                       [Math]::Abs([int]$targetRect[2] - [int]$at.rect[2]) -le 2 -and
+                       [Math]::Abs([int]$targetRect[3] - [int]$at.rect[3]) -le 2)
+        }
+        $sameName = ($matchName -ne '' -and $matchName -eq $el.Current.Name)
+        $out.at.matches_target = ($sameRect -or $sameName)
       }
     } catch { }
   }
@@ -952,7 +1031,16 @@ switch ($action) {
   'move' {
     $x = [int]$cfg.coordinate[0]; $y = [int]$cfg.coordinate[1]
     $got = [CUAct]::MoveVerified($x, $y)
-    Emit @{ ok = $true; cursor = $got; requested = @($x, $y) }
+    $landed = ($got[0] -eq $x -and $got[1] -eq $y)
+    $res = [ordered]@{ ok = $true; cursor = $got; requested = @($x, $y); landed = $landed }
+    if (-not $landed) {
+      $bad = Test-PointerPlaced $x $y
+      $res.ok = $true
+      $res.refused = $bad.refused
+      $res.foreground = $bad.foreground
+      $res.hint_en = $bad.error
+    }
+    Emit $res
   }
 
   'drag' {
@@ -960,7 +1048,8 @@ switch ($action) {
     if ($null -ne $refusal) { Emit $refusal }
     $sx = [int]$cfg.from[0]; $sy = [int]$cfg.from[1]
     $tx = [int]$cfg.to[0]; $ty = [int]$cfg.to[1]
-    [void][CUAct]::MoveVerified($sx, $sy)
+    $place = Test-PointerPlaced $sx $sy
+    if ($null -ne $place) { Emit $place }
     Start-Sleep -Milliseconds 40
     if ($null -ne $cfg.holdKeys -and @($cfg.holdKeys).Count -gt 0) {
       foreach ($hk in @($cfg.holdKeys)) { $r = Resolve-Key $hk; if ($null -ne $r -and $r.ContainsKey('vk')) { [CUAct]::KeyDown($r.vk) } }
@@ -990,7 +1079,10 @@ switch ($action) {
     $x = [int]$cfg.coordinate[0]; $y = [int]$cfg.coordinate[1]
     $dir = [string]$cfg.direction; if ([string]::IsNullOrWhiteSpace($dir)) { $dir = 'down' }
     $clicks = [int]$cfg.clicks; if ($clicks -le 0) { $clicks = 1 }
-    [void][CUAct]::MoveVerified($x, $y)
+    # A wheel event goes to whatever is under the pointer, so an unplaced pointer
+    # scrolls the wrong window. Same rule as the click: aim or do nothing.
+    $place = Test-PointerPlaced $x $y
+    if ($null -ne $place) { Emit $place }
     Start-Sleep -Milliseconds 20
     $notches = 120 * $clicks
     if ($dir -eq 'up') { [CUAct]::Wheel((To-U32 $notches)) }

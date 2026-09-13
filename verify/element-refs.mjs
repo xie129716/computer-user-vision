@@ -141,6 +141,18 @@ if (dup) {
   skip('A9 ambiguous-name refusal', 'the focused window has no duplicated control name');
 }
 
+// A minimized window must not be described by its on-screen sliver. Measured on a
+// maximized browser: DWMWA_EXTENDED_FRAME_BOUNDS reports 146x21 while minimized,
+// which is not where anything is, and a size filter then dropped the window from
+// the listing entirely -- so "focus Edge" could not even find Edge. Minimized
+// windows now carry their restored geometry and say so.
+const allWindows = (await tool('computer_list_windows').execute({}, exec)).windows ?? [];
+const minimized = allWindows.filter((w) => w.minimized === true);
+const badMinimized = minimized.filter((w) => w.rect_is_restored !== true || w.width < 100 || w.height < 100);
+check('A10 a minimized window reports restored geometry, not its 146x21 sliver',
+  badMinimized.length === 0,
+  `${minimized.length} minimized window(s); ${badMinimized.length} without usable geometry`);
+
 // ── B. real clicks (opt in) ─────────────────────────────────────────────────
 if (!WITH_CLICK) {
   console.log('\n(--click not given: skipping the live click checks)');
@@ -195,6 +207,15 @@ if (!WITH_CLICK) {
           `clicked ${byRef.clicked}, control centre [${chosen.cx},${chosen.cy}], method=${byRef.method}`);
         check('B2 the tool confirms the hit', byRef.hit_confirmed === true,
           `under_cursor=${byRef.under_cursor}`);
+
+        // The pointer really was placed where the click claims. A click that could
+        // not be aimed used to be sent anyway -- onto whatever was under the
+        // pointer -- so the reported point and the actual one have to be checked
+        // against each other, not just against the target rectangle.
+        const cursor = await tool('computer_get_cursor_position').execute({}, exec);
+        check('B2b the pointer is really where the click says it clicked',
+          `[${cursor.x},${cursor.y}]` === byRef.clicked,
+          `cursor [${cursor.x},${cursor.y}] vs clicked ${byRef.clicked}`);
 
         const uniqueName = (chosen.name ?? '').trim() !== '' && nameCount.get(chosen.name) === 1;
         if (!uniqueName) {

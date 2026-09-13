@@ -1,6 +1,6 @@
 {
     "name":  "computer-user",
-    "version":  "0.3.22",
+    "version":  "0.3.23",
     "description":  "Unofficial fork of computer-user by jing-hy: Codex-style Windows computer use for DeepSeek Harness. Clicks target live UI Automation element refs (ref/name) rather than pixels estimated off a downscaled screenshot, so they land exactly; screenshots ride the tool result as real images and carry an exact image-to-screen mapping.",
     "type":  "module",
     "main":  "src/index.js",

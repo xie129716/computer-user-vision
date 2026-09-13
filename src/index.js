@@ -450,7 +450,7 @@ export function apply(ctx, config) {
 
   // ── debug helper ──
   if (config?.debug) {
-    ctx.logger?.info?.(`[computer-user] scripts: ${powerShellScript('capture.ps1')}, ${powerShellScript('input.ps1')}`);
+    ctx.logger?.info?.(`[computer-user] executor: ${powerShellScript('act.ps1')}`);
   }
 }
 

@@ -86,7 +86,7 @@ computer_screenshot → image_compare           # 验证
 | `computer_get_cursor_position` | 读取当前光标位置 `[x,y]` |
 
 坐标为「相对**虚拟屏原点**（所有显示器合并区域左上角）」的像素；`computer_screenshot`
-返回的 `virtual_offset` 即该原点。`SetProcessDPIAware` 保证高分屏缩放下坐标与物理像素一致。
+返回的 `virtual_offset` 即该原点。执行器已把进程提升到 **PerMonitorV2** DPI 感知，高分屏缩放下坐标仍与物理像素一致。
 
 ## 安装
 
@@ -175,11 +175,9 @@ computer_screenshot → image_compare             # 验证
 ## 开发
 
 ```text
-src/capture.ps1     DPI 感知多屏截图（System.Drawing）
-src/input.ps1       SendInput 鼠标键盘后端
+src/act.ps1         唯一执行器：截图 / 元素枚举（UIA）/ 鼠标键盘 / 窗口与前台 / 激活
 src/ps.js           PowerShell 运行器（base64 JSON、超时、取消）
-src/context.ps1     窗口 / 前台 / 元素探测（含激活与 UWP 内容显示）
-src/tools.js        12 个 computer_* 工具定义 + 模式门禁 + 前置焦点校验 + 视觉直返
+src/tools.js        13 个 computer_* 工具定义 + 模式门禁 + 元素引用解析 + 视觉直返
 src/overlay.ps1     控制指示器（渐变光框 / 光标光晕 / 顶部横幅 + 停止按钮 + 全局热键）
 src/overlay.js      指示器生命周期（心跳 / 截图暂停 / 停止标记）
 src/approvals.js    /computer 授权落盘（跨宿主重启保持）

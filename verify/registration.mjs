@@ -4,7 +4,7 @@
  * Loads the real plugin module and runs its apply() against a mock cordis
  * context, asserting that everything the upstream `settingsNamespace` import
  * used to take down is actually registered:
- *   - the 10 computer_* tools
+ *   - the 13 computer_* tools
  *   - the `computer-user` settings namespace (via provider.register)
  *   - the /computer approval command
  *   - the LLM output guard
@@ -63,7 +63,8 @@ console.log(`plugin: ${mod.name} v${mod.version}\n`);
 mod.apply(ctx, { mode: 'auto' });
 
 const names = tools.map((t) => t.name).sort();
-check('apply() registers 12 computer_* tools', tools.length === 12, `${tools.length}: ${names.join(', ')}`);
+check('apply() registers 13 computer_* tools', tools.length === 13, `${tools.length}: ${names.join(', ')}`);
+check('computer_elements is registered (refs without a screenshot)', names.includes('computer_elements'));
 check('computer_screenshot is registered', names.includes('computer_screenshot'));
 check('computer_list_windows is registered (exact window geometry)', names.includes('computer_list_windows'));
 check('computer_activate_window is registered (avoid the activation-click trap)', names.includes('computer_activate_window'));

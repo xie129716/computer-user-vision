@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.3.18 (clicks that land, and a click that costs one step)
+
+Everything here came from driving a real desktop and measuring, not from reading the code. The two
+reports were "the click lands in the wrong place" and "one simple click takes several steps of
+thinking"; both turned out to be structural rather than incidental.
+
+- **The coordinate path *was* the misalignment.** A 1920x1080 desktop is 2,073,600 px, over the
+  640,000 px vision budget, so the preview a model reasons about is ~1045x588: one image pixel is
+  **1.84** screen pixels, and a 22 px toolbar button is 12 px tall in that picture. The OS already
+  knew the exact rectangle of every control — the plugin used it only to *verify* a click after the
+  fact. Now `computer_screenshot` (always) and the new `computer_elements` enumerate the focused
+  window's controls and return refs, and `computer_click` accepts `ref` (`e12`) or `name` (visible
+  text). Nothing is estimated any more: a ref click lands on `left + floor(width/2)` by
+  construction, measured at **0 px** error.
+
+- **`GetWindowRect` is 8 px larger on every side than the window you can see.** It includes the
+  invisible DWM resize border — measured on Edge: raw `-8,-8 1936x1056` against visible
+  `0,0 1920x1040`. `computer_list_windows` reported the raw value, so any window-relative aiming
+  carried a systematic 8 px error. `rect` is now the DWM extended frame bounds; the raw value is
+  kept as `window_rect`.
+
+- **`powershell.exe` starts DPI-UNAWARE.** Measured: `GetAwarenessFromDpiAwarenessContext == 0`. The
+  old scripts raised it only to System-aware, which is still wrong on a scaled display: Windows
+  virtualises the coordinates, so every click is off by the scale ratio. That is invisible on a
+  100% monitor and is exactly the class of bug that only appears on someone else's machine. The
+  executor lifts the process to PerMonitorV2 and reports `monitor_dpi` so a caller can tell.
+
+- **One click cost three or four processes.** Every PowerShell start is ~380 ms of process creation
+  plus re-compiling the `Add-Type` C# — `input.ps1` doing nothing but reading the cursor took
+  **376 ms**. `computer_click` spawned three or four of them (expect-window check, before-foreground,
+  the click, then a probe) for **1.1-1.5 s** of pure overhead. `capture.ps1`, `input.ps1` and
+  `context.ps1` are merged into a single executor, `src/act.ps1`; one tool call is now one process,
+  and the focus check, ref resolution, click and probe cannot disagree about the desktop because
+  they are the same process.
+
+- **DPI-correct mouse movement, and a move that proves itself.** `SetCursorPos` was a bare call with
+  no event attached. Moves now go through an absolute `SendInput` addressed to the whole virtual
+  desktop (`MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK`) and are verified with `GetCursorPos`
+  before the click follows, because a move that silently failed used to be indistinguishable from
+  one that worked.
+
+- **`ControlType` is not a usable filter.** A WinForms button — the backbone of most Windows
+  applications — is exposed by the MSAA bridge as `ControlType.Pane` and reports **no supported
+  patterns at all**. Filtering by control type discarded precisely those controls. Enumeration now
+  tests capability instead (accessible name, action pattern, value, or a control-like class name)
+  over every descendant, with all properties fetched in **one** cached `CacheRequest` pass.
+
+- **Degenerate states are reported instead of guessed.** `computer_activate_window` used to say "the
+  window never came forward" even when the real cause was a *hidden* window the system still
+  reported as foreground; it now tells the two apart. An ambiguous `name` is refused with the
+  candidate list rather than resolved arbitrarily. An unknown ref says so, and lists what is
+  available.
+
+- **New `verify/element-refs.mjs`** proves the contract on the live desktop: 8 safe checks plus
+  `--click`, which spawns its own Notepad and asserts that a ref click and a name click both land
+  exactly on the reported centre and are confirmed by the tool. It asserts that the window under
+  test is actually in front, because an earlier revision of the test silently measured the wrong
+  window and passed.
+
+- Tool count 12 -> 13 (`computer_elements`). The ref annotation is opt-in (`annotate: true`): on a
+  dense window the chips collide into an unreadable band, so the element list is the better channel
+  and the drawing is kept for sparse windows.
+
 ## 0.3.17 (a second pass over the submission rules, and the machine-specifics they exposed)
 
 The first pass checked the hard gates — `dsh.bundle`, repo age, topic, peer ranges — and stopped

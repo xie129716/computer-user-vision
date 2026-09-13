@@ -1,7 +1,7 @@
 /**
  * Vision screenshot verification (end-to-end, real capture).
  *
- * Runs the REAL capture.ps1 through the plugin's own runPs with stubbed host
+ * Runs the REAL act.ps1 through the plugin's own runPs with stubbed host
  * services (llm / attachments), then asserts:
  *   A. vision route   -> an image block is attached and the coordinate mapping
  *      maps the image back onto the true screen size
@@ -93,7 +93,7 @@ const check = (name, ok, detail) => {
 
 await mkdir(WORK, { recursive: true });
 const refPath = join(WORK, 'reference.png');
-const ref = await runPs('capture.ps1', { outPath: refPath, scale: 1 });
+const ref = await runPs('act.ps1', { action: 'screenshot', outPath: refPath, scale: 1 });
 console.log(`reference capture: ${ref.width}x${ref.height}, virtual_offset=[${ref.virtual_offset}]\n`);
 
 // ── A. vision route ─────────────────────────────────────────────────────────
@@ -128,7 +128,11 @@ console.log(`reference capture: ${ref.width}x${ref.height}, virtual_offset=[${re
   const blocks = tool.output.render({}, value);
   check('B1 no image block on a text-only route', !blocks.some((b) => b.type === 'image'));
   check('B2 reports vision:false', value.vision === false);
-  check('B3 envelope points at an external image tool', /picturereader/.test(blocks[0].text));
+  // The contract changed deliberately: the text-only route no longer names one
+  // specific external reader. It says the picture is a file and hands over the
+  // element list, which is what actually removes the need for a reader.
+  check('B3 envelope explains the picture is a file and points at the element list',
+    /PNG file/.test(blocks[0].text) && /path:/.test(blocks[0].text));
   check('B4 path still returned', typeof value.path === 'string' && value.path.endsWith('.png'));
 }
 

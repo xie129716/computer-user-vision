@@ -6,8 +6,10 @@ import { readFile } from 'node:fs/promises';
 /**
  * Build the computer_* tools. Coordinate system: pixels relative to the
  * multi-monitor VIRTUAL SCREEN ORIGIN (returned by computer_screenshot as
- * `virtual_offset`). All screen-reading/automation is delegated to bundled
- * PowerShell scripts (capture.ps1 / input.ps1) with zero native dependencies.
+ * `virtual_offset`). All screen reading and input is delegated to one bundled
+ * PowerShell executor (act.ps1) with zero native dependencies: one process per
+ * tool call, which also means the focus check, the resolution of an element ref,
+ * the click and the follow-up probe cannot disagree about the desktop.
  *
  * Vision feedback: when the calling route declares `image` input, the screenshot
  * is committed through the host `attachments` service and rendered as a real
@@ -26,10 +28,90 @@ const COORD = {
   description: '相对多屏虚拟屏原点的像素坐标 [x, y]（原点是 computer_screenshot 返回的 virtual_offset）',
 };
 
+/**
+ * One compact line, repeated in every tool description. The previous version
+ * pasted a five-sentence paragraph into eight different tool schemas, so its cost
+ * was paid on every turn for guidance the caller only needs once.
+ */
 const HEAD =
-  '先调用 computer_screenshot 获取当前屏幕：模型具备视觉能力时截图会直接以图片附加返回，直接观察即可（无需 picturereader）；' +
-  '模型不支持图像时返回文件路径，需交给外部图像分析工具（如 picturereader 的 image_scan / image_ocr）。' +
-  '不要靠缩略图目测坐标——用 computer_list_windows 拿窗口精确矩形，或用 computer_activate_window 先把目标窗口置前（避免第一下点击只用于激活窗口）。确认目标后再执行本次操作。';
+  '定位优先用元素引用：computer_click 接受 ref（如 "e12"）或 name（控件可见文字），两者都不需要坐标换算；' +
+  '只有在元素列表里找不到目标时才退回 coordinate。单击后台窗口的第一下会被系统吃掉（只用于激活），需要时先用 computer_activate_window 聚焦。';
+
+/**
+ * Element references from the most recent enumerations, newest first.
+ *
+ * A ref such as `e12` only means something together with the enumeration that
+ * produced it, and the caller may click it several steps later. Keeping the last
+ * couple of generations lets a ref from the previous screenshot still resolve,
+ * while act.ps1 re-looks-up the live element by automation id / name / type so
+ * the click stays correct even if the window has moved since.
+ */
+const REF_GENERATIONS = 2;
+const refGenerations = [];
+
+/** Remember one enumeration so its refs can be clicked later. */
+function rememberElements(hwnd, title, elements) {
+  const map = new Map();
+  for (const el of elements ?? []) {
+    if (!el || el.ref === undefined || el.ref === null) continue;
+    const key = String(el.ref).replace(/^@/, '');
+    if (!key) continue;
+    map.set(key, {
+      ref: key,
+      name: typeof el.name === 'string' ? el.name : '',
+      type: typeof el.type === 'string' ? el.type : '',
+      automationId: typeof el.automationId === 'string' ? el.automationId : '',
+      rect: Array.isArray(el.rect) ? el.rect : null,
+      hwnd: Number(hwnd) || 0,
+      windowTitle: typeof title === 'string' ? title : '',
+    });
+  }
+  if (map.size === 0) return 0;
+  refGenerations.unshift({ at: Date.now(), hwnd: Number(hwnd) || 0, title: title ?? '', map });
+  while (refGenerations.length > REF_GENERATIONS) refGenerations.pop();
+  return map.size;
+}
+
+/** Resolve a ref (with or without the leading @) to the element it named. */
+function lookupRef(ref) {
+  const key = String(ref ?? '').trim().replace(/^@/, '');
+  if (!key) return null;
+  for (const gen of refGenerations) {
+    const hit = gen.map.get(key);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** The head of the current addressable list, for "no such ref" messages. */
+function refInventory(limit = 12) {
+  const out = [];
+  for (const [, el] of (refGenerations[0]?.map ?? new Map())) {
+    out.push(`${el.ref}${el.name ? ` "${el.name}"` : ''}`);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/**
+ * Render an element list as ONE dense line instead of a JSON blob. A screenshot of
+ * a busy window can carry 60+ elements; as pretty JSON that is thousands of
+ * tokens, as a single line it is a few hundred.
+ */
+function elementLine(elements, limit = 45) {
+  if (!Array.isArray(elements) || elements.length === 0) return null;
+  const parts = [];
+  for (const el of elements.slice(0, limit)) {
+    const bits = [String(el.ref)];
+    if (el.type) bits.push(el.type);
+    if (el.name) bits.push(`"${el.name}"`);
+    if (Array.isArray(el.patterns) && el.patterns.length > 0) bits.push(`{${el.patterns.join(',')}}`);
+    if (el.enabled === false) bits.push('(disabled)');
+    parts.push(bits.join(' '));
+  }
+  const tail = elements.length > limit ? ` … +${elements.length - limit} more` : '';
+  return `elements (${elements.length}): ${parts.join(' | ')}${tail}`;
+}
 
 /**
  * DeepSeek's normal vision projection budget (640k pixels). A picture larger
@@ -57,6 +139,7 @@ const IMAGE_VALUE_SCHEMA = {
 /** Tools that are always safe (no side effects on the user's desktop). */
 const READONLY_TOOLS = new Set([
   'computer_screenshot',
+  'computer_elements',
   'computer_get_cursor_position',
   'computer_wait',
   'computer_list_windows',
@@ -194,22 +277,35 @@ function screenshotEnvelope(value) {
     lines.push(`path: ${v.path}`);
     lines.push(`image_size: ${v.image.width}x${v.image.height} px (the image you are looking at)`);
     lines.push(`screen_mapping: screen_x = ${vx} + image_x * ${kx} ; screen_y = ${vy} + image_y * ${ky}`);
-    lines.push(
-      'Measure the target on the attached image, then convert with screen_mapping: the result is the virtual-screen ' +
-        'physical pixel coordinate that computer_click / computer_scroll / computer_drag / computer_move_mouse expect.'
-    );
     lines.push(`virtual_offset: [${vx}, ${vy}]`);
     lines.push(`capture_scale: ${v.scale}`);
-    return lines.join('\n');
+  } else {
+    lines.push('screenshot saved to a PNG file (this model does not declare image input, so the picture cannot be attached). An external image reader can open it, but the element list below usually removes the need.');
+    lines.push(`path: ${v.path}`);
+    lines.push(`width: ${v.width}`);
+    lines.push(`height: ${v.height}`);
+    lines.push(`virtual_offset: [${vx}, ${vy}]`);
+    lines.push(`scale: ${v.scale}`);
+    const spi = Array.isArray(v.screen_per_image) ? v.screen_per_image : [1, 1];
+    lines.push(`screen_per_image: [${spi.join(', ')}]  (screen = virtual_offset + image_px * this)`);
   }
 
-  lines.push('screenshot saved to a PNG file (this model does not declare image input, so the picture cannot be attached).');
-  lines.push(`path: ${v.path}`);
-  lines.push(`width: ${v.width}`);
-  lines.push(`height: ${v.height}`);
-  lines.push(`virtual_offset: [${vx}, ${vy}]`);
-  lines.push(`scale: ${v.scale}`);
-  lines.push('Analyze the file with an external image tool (e.g. picturereader image_scan / image_ocr) to locate elements before acting.');
+  const win = v.foreground;
+  if (win && win.title) {
+    const rect = Array.isArray(win.rect) ? win.rect : [];
+    lines.push(`foreground_window: "${win.title}" hwnd=${win.hwnd} rect=[${rect.join(',')}]`);
+  }
+
+  const list = elementLine(v.elements);
+  if (list) {
+    lines.push(list);
+    lines.push('Address any of these by ref — computer_click {ref: "e12"} — or by visible text, computer_click {name: "<text>"}. That needs no pixel arithmetic and survives the window moving. Use screen_mapping only for something that is not in the list.');
+  } else {
+    lines.push('no actionable elements were found in the focused window: fall back to screen_mapping, or focus the right window first (computer_list_windows / computer_activate_window).');
+  }
+  if (v.annotated) {
+    lines.push(`annotation: ${v.labeled ?? 0} of ${v.element_count ?? 0} elements carry a readable ref label on the image; the rest collided and are outline-only, so take those from the list above.`);
+  }
   return lines.join('\n');
 }
 
@@ -219,48 +315,14 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
 
   const gate = (toolName) => modeGate(getConfig(), toolName, approvedSessions, sessionId, controlState);
 
-  /** One context.ps1 round trip (window enumeration / hit test / activation). */
-  const ctxPs = (payload, exec) => runPs('context.ps1', payload, { signal: exec?.signal });
-
-  /** Post-action context: what is focused now, and what sits under a point. */
-  async function probeContext(exec, point) {
-    const cfg = getConfig() ?? {};
-    if (cfg.verify_actions === false) return null;
-    try {
-      const payload = { action: 'probe' };
-      if (Array.isArray(point) && point.length === 2) {
-        payload.x = Math.round(Number(point[0]));
-        payload.y = Math.round(Number(point[1]));
-      }
-      return await ctxPs(payload, exec);
-    } catch (error) {
-      ctx?.logger?.warn?.(`[computer-user] probe failed: ${String(error?.message ?? error)}`);
-      return null;
-    }
-  }
-
-  /** Condense a probed element into the few fields a caller can act on. */
-  function describeElement(probe) {
-    const el = probe?.element;
-    if (!el) return probe?.available === false ? 'unavailable' : null;
-    // Only ever assign PRESENT values: a property whose value is `undefined` is
-    // not lossless JSON, and the harness rejects the entire tool result for it.
-    // A plain document control with an empty name is exactly that case.
-    const out = { pid: el.pid, enabled: el.enabled };
-    if (el.name) out.name = el.name;
-    if (el.localizedType) out.type = el.localizedType;
-    if (el.className) out.class = el.className;
-    if (el.automationId) out.automationId = el.automationId;
-    if (Array.isArray(el.rect)) out.rect = el.rect;
-    return out;
-  }
-
-  /** The focused-window summary, trimmed to what matters for verification. */
+  /**
+   * The focused-window summary, trimmed to what matters for verification.
+   *
+   * Assign only PRESENT fields: a property whose value is `undefined` is not
+   * lossless JSON, and the harness discards the entire tool result over one.
+   */
   function describeWindow(window) {
     if (!window) return null;
-    // Assign only PRESENT fields, for the same reason as describeElement: a
-    // property whose value is `undefined` is not lossless JSON, and the harness
-    // discards the entire tool result over a single one.
     const out = {};
     if (window.title !== undefined) out.title = window.title;
     if (window.pid !== undefined) out.pid = window.pid;
@@ -277,52 +339,16 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
       + 'that stole focus cannot silently receive the keystrokes.',
   };
 
-  /**
-   * Refuse focus-sensitive input when the foreground window is not the expected one.
-   *
-   * Input tools act on "wherever focus is at this instant", so a window that
-   * quietly takes focus between two steps redirects the keystrokes into the wrong
-   * application. Noticing that afterwards only explains the damage once it is
-   * done, so when the caller names the window it expects, check BEFORE acting.
-   *
-   * @param {unknown} expect - substring the foreground window title must contain.
-   * @returns {Promise<object|null>} refusal fields, or null when it is safe to act.
-   */
-  async function expectWindowGuard(expect, exec) {
-    const want = typeof expect === 'string' ? expect.trim() : '';
-    if (!want) return null;
-    let foreground = null;
-    try {
-      foreground = (await ctxPs({ action: 'foreground' }, exec)).window ?? null;
-    } catch {
-      foreground = null;
-    }
-    const title = String(foreground?.title ?? '');
-    if (title.toLowerCase().includes(want.toLowerCase())) return null;
-    return {
-      refused: true,
-      expected_window: want,
-      focused_window: {
-        title,
-        pid: Number(foreground?.pid ?? 0),
-        hwnd: Number(foreground?.hwnd ?? 0),
-      },
-      hint: `已拒绝发送输入：当前前景窗口「${title || '(无标题)'}」不含「${want}」。`
-        + '请先用 computer_activate_window 聚焦目标窗口（或 computer_list_windows 核对标题）后重试；'
-        + '确实要打到当前焦点就把 expect_window 去掉。',
-    };
-  }
-
   // -- computer_screenshot ---------------------------------------------------
   const computerScreenshot = {
     name: 'computer_screenshot',
     description: [
-      'Capture the whole virtual screen (all monitors) and return it so you can see the desktop (the look step of computer use).',
-      'When the current model accepts image input the screenshot is attached to this result as an actual image — look at it directly; ' +
-        'otherwise only a PNG path is returned and an external image tool (picturereader image_scan / image_ocr) must analyze it.',
+      'Capture the whole virtual screen (all monitors), list the actionable controls of the focused window as clickable refs, and return the picture so you can see the desktop (the look step of computer use).',
+      'Act on the returned refs rather than on estimated pixels: computer_click {ref:"e12"} or {name:"<visible text>"}. A downscaled preview is roughly 1.8 screen pixels per image pixel, which is precisely how a click misses a small control.',
+      'When the current model accepts image input the screenshot is attached to this result as an actual image — look at it directly; otherwise only a PNG path is returned and the element list is how you locate things.',
       `${HEAD}`,
-      'Parameters: path (optional — where to save; when empty a unique file is written under the configured screenshot_dir, defaulting to the OS temp dir), region (optional [x0,y0,x1,y1] fractions in 0..1 to capture a sub-area), scale (optional 0.1..1 to downscale the saved image).',
-      'Returns { path, width, height, virtual_offset:[x,y], scale, image?, screen_per_pixel? }. In vision mode the attached image is authoritative and screen_mapping converts an image pixel to the virtual-screen pixel that the input tools take; virtual_offset is the virtual-screen origin you must add to a monitor\'s local pixel when targeting that monitor.',
+      'Parameters: path (optional output file), region (optional [x0,y0,x1,y1] fractions in 0..1 to capture a sub-area), scale (optional 0.1..1 downscale), grid (optional labelled coordinate-grid spacing in screen px), annotate (default false — draw a ref label on each control; helpful on a sparse window, cluttered on a dense one), include_static (also list plain Text/Image elements), max_elements (cap on refs, default 60).',
+      'Returns { path, width, height, virtual_offset:[x,y], scale, screen_per_image:[kx,ky], elements?, image?, screen_per_pixel? }. screen_mapping converts an image pixel to the virtual-screen pixel the input tools take.',
     ].join(' '),
     parameters: {
       type: 'object',
@@ -332,6 +358,9 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         region: { type: 'array', minItems: 4, maxItems: 4, items: { type: 'number' }, description: 'Optional [x0, y0, x1, y1] fractions (0..1) to capture only a sub-area of the virtual screen.' },
         scale: { type: 'number', description: 'Optional 0.1..1 downscale for the saved image (default: the configured default_scale, 1 = full resolution). In vision mode the result is additionally fitted into the model\'s pixel budget.' },
         grid: { type: 'number', description: 'Optional coordinate grid spacing in virtual-screen pixels (e.g. 100). Draws labelled lines so screen coordinates can be read straight off a downscaled image instead of estimated. 0 disables it.' },
+        annotate: { type: 'boolean', description: 'Draw a ref label on each detected control. Off by default: on a dense window the labels collide and the element list is easier to use.' },
+        include_static: { type: 'boolean', description: 'Also list non-interactive Text/Image elements as refs.' },
+        max_elements: { type: 'number', description: 'Maximum number of element refs to collect (default 60, max 200). 0 skips the enumeration entirely.' },
       },
       required: [],
     },
@@ -348,6 +377,11 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
           vision: { type: 'boolean' },
           screen_per_pixel: { type: 'array', items: { type: 'number' } },
           image: IMAGE_VALUE_SCHEMA,
+          elements: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          element_count: { type: 'number' },
+          labeled: { type: 'number' },
+          annotated: { type: 'boolean' },
+          foreground: { type: 'object', additionalProperties: true },
         },
         required: ['path', 'width', 'height', 'virtual_offset', 'scale'],
       },
@@ -381,12 +415,28 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
       const region = Array.isArray(args?.region) && args.region.length === 4 ? args.region : undefined;
       const requestedScale = typeof args?.scale === 'number' ? args.scale : cfg.default_scale;
       const gridSpacing = typeof args?.grid === 'number' ? args.grid : (Number(cfg.grid_spacing) || 0);
+      const annotate = args?.annotate === true || (args?.annotate === undefined && cfg.annotate_screenshots === true);
+      // max_elements: 0 is a deliberate "do not enumerate" (saves the UI Automation
+      // pass on a window with a huge tree).
+      const rawMax = Number(args?.max_elements);
+      const maxElements = Number.isFinite(rawMax) && rawMax <= 0
+        ? 0
+        : (Number.isFinite(rawMax) ? Math.max(1, Math.min(200, Math.trunc(rawMax))) : 60);
 
-      const capture = (scale) => runPs('capture.ps1', { outPath, region, scale, grid: gridSpacing }, { signal: exec?.signal });
+      // One process does the whole thing: enumerate the controls, capture, draw.
+      // Splitting capture from enumeration into two PowerShell starts cost an
+      // extra ~380 ms and let the two disagree about the desktop.
+      const capture = (scale) => runPs('act.ps1', {
+        action: 'screenshot',
+        outPath,
+        region,
+        scale,
+        grid: gridSpacing,
+        annotate,
+        annotateMax: maxElements,
+        include_static: args?.include_static === true,
+      }, { signal: exec?.signal });
 
-      // The control indicator is drawn for the human watching, never for the
-      // model: leaving it up would bake a bright frame into every screenshot
-      // and cover real content along the edges. Hide it for the capture.
       let res;
       const paused = (await controlState?.pauseForCapture?.()) === true;
       try {
@@ -405,12 +455,27 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         if (paused) controlState?.resumeAfterCapture?.();
       }
 
+      const elements = Array.isArray(res.elements) ? res.elements : [];
+      const foreground = res.window ?? null;
+      rememberElements(foreground?.hwnd ?? 0, foreground?.title ?? '', elements);
+
       const base = {
         path: res.path,
         width: res.width,
         height: res.height,
+        full_width: Number(res.full_width) || res.width,
+        full_height: Number(res.full_height) || res.height,
         virtual_offset: res.virtual_offset,
         scale: res.scale,
+        // Reported in BOTH modes: the text-only route still needs the exact factor
+        // to turn whatever found the target into screen pixels. It used to be
+        // derived from the requested scale, which is only approximately right.
+        screen_per_image: Array.isArray(res.screen_per_image) ? res.screen_per_image : [1, 1],
+        element_count: elements.length,
+        labeled: Number(res.labeled) || 0,
+        annotated: res.annotated === true,
+        ...(foreground ? { foreground } : {}),
+        ...(elements.length > 0 ? { elements } : {}),
       };
 
       if (!visionMode) return { ...base, vision: false };
@@ -421,13 +486,14 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         const mediaType = lower.endsWith('.jpg') || lower.endsWith('.jpeg') ? 'image/jpeg' : 'image/png';
         const ref = await attachments.saveImage({ data, mediaType, name: basename(res.path) });
 
-        // The host may normalize (downscale) on save; fold that into the factor
-        // so one image pixel always maps to the right number of screen pixels.
+        // The host may normalize (downscale) on save; fold that together with the
+        // capture's own crop/scale into one factor, so one image pixel always maps
+        // to the right number of screen pixels.
         const shownW = Number(ref.width) > 0 ? Number(ref.width) : res.width;
         const shownH = Number(ref.height) > 0 ? Number(ref.height) : res.height;
-        const scale = Number(res.scale) > 0 ? Number(res.scale) : 1;
-        const kx = Number(((res.width / shownW) / scale).toFixed(4));
-        const ky = Number(((res.height / shownH) / scale).toFixed(4));
+        const spi = Array.isArray(res.screen_per_image) ? res.screen_per_image : [1, 1];
+        const kx = Number((((Number(spi[0]) || 1) * res.width) / shownW).toFixed(4));
+        const ky = Number((((Number(spi[1]) || 1) * res.height) / shownH).toFixed(4));
 
         return {
           ...base,
@@ -451,57 +517,189 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
     },
   };
 
-  // -- side-effecting tools --------------------------------------------------
+  // -- computer_elements -----------------------------------------------------
+  // Enumerate the controls of a window WITHOUT taking a screenshot. This is the
+  // cheap way to re-read a window after it changed, and the list it returns is
+  // what computer_click refs are resolved against.
+  const computerElements = {
+    name: 'computer_elements',
+    description: [
+      'List the actionable controls of a window (focused window by default) as refs, without capturing a picture.',
+      'Each entry carries a ref, the accessible name, the control type, the exact screen rectangle, and which action patterns it supports.',
+      'Use it when the window changed and you need the refs refreshed: computer_click with a ref or a name needs no screenshot at all.',
+      'Parameters: hwnd (default: focused window), max (default 60), include_static (also list plain Text/Image elements).',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {
+        hwnd: { type: 'number', description: 'Window handle from computer_list_windows. Defaults to the focused window.' },
+        max: { type: 'number', description: 'Maximum number of refs (default 60, max 200).' },
+        include_static: { type: 'boolean', description: 'Also list non-interactive Text/Image elements.' },
+      },
+      required: [],
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          count: { type: 'number' },
+          window: { type: 'object', additionalProperties: true },
+          elements: { type: 'array', items: { type: 'object', additionalProperties: true } },
+          scanned: { type: 'number' },
+          ms: { type: 'number' },
+          available: { type: 'boolean' },
+          reason: { type: 'string' },
+        },
+        required: ['count'],
+      },
+      render: (_args, value) => {
+        const lines = [];
+        if (value?.available === false) {
+          lines.push(`UI Automation is unavailable for this window: ${value.reason ?? 'unknown reason'}`);
+        } else {
+          const win = value?.window;
+          if (win?.title) lines.push(`window: "${win.title}" hwnd=${win.hwnd} rect=[${(win.rect ?? []).join(',')}]`);
+          lines.push(`scanned ${value?.scanned ?? 0} descendants in ${value?.ms ?? 0} ms`);
+          lines.push(elementLine(value?.elements) ?? 'no actionable elements found');
+        }
+        return [{ type: 'text', text: lines.join('\n') }];
+      },
+    },
+    isConcurrencySafe: () => false,
+    async execute(args, exec) {
+      gate('computer_elements');
+      const payload = { action: 'elements' };
+      if (Number.isFinite(Number(args?.hwnd)) && Number(args.hwnd) !== 0) payload.hwnd = Math.trunc(Number(args.hwnd));
+      payload.max = Number.isFinite(Number(args?.max)) ? Math.max(1, Math.min(200, Math.trunc(Number(args.max)))) : 60;
+      payload.include_static = args?.include_static === true;
+      const res = await runPs('act.ps1', payload, { signal: exec?.signal });
+      const elements = Array.isArray(res.elements) ? res.elements : [];
+      rememberElements(res.window?.hwnd ?? payload.hwnd ?? 0, res.window?.title ?? '', elements);
+      return {
+        count: elements.length,
+        available: res.available !== false,
+        ...(res.available === false ? { reason: res.reason } : {}),
+        ...(res.window ? { window: res.window } : {}),
+        scanned: Number(res.scanned) || 0,
+        ms: Number(res.ms) || 0,
+        ...(elements.length > 0 ? { elements } : {}),
+      };
+    },
+  };
+
+  // -- computer_click --------------------------------------------------------
+  // Click by ref, by accessible name, or by coordinate. The first two route
+  // through UI Automation, which knows the control's exact rectangle, so nothing
+  // is ever estimated from a downscaled picture.
   const computerClick = {
     name: 'computer_click',
-    description: [`Click at a coordinate. ${HEAD}`, 'Parameters: coordinate (required [x,y] pixels, relative to the virtual-screen origin), action (optional: click [default] | right_click | double_click).', 'Returns the clicked coordinate.'],
+    description: [
+      'Click a control. Give ONE of: ref (an element ref such as "e12" from computer_screenshot / computer_elements), name (the control\'s visible text, matched exactly first then as a substring), or coordinate.',
+      'ref and name are resolved against the live UI Automation tree at click time, so the click follows the control if the window moved since the screenshot. Prefer them over coordinate.',
+      `${HEAD}`,
+      'Parameters: ref, name, coordinate ([x,y] virtual-screen pixels), action (click [default] | right_click | double_click | middle_click), expect_window (refuse unless the focused window title contains this), no_invoke (force a real mouse click instead of the control\'s UI Automation action).',
+      'Returns the point actually clicked, how it was performed (invoke/toggle/select/expand = the control was activated directly, mouse = synthetic click at its centre), the target rectangle, what sits under the click afterwards, and whether the click only raised the window.',
+    ].join(' '),
     parameters: {
-      type: 'object', additionalProperties: true,
+      type: 'object',
+      additionalProperties: true,
       properties: {
-        coordinate: { ...COORD, description: 'Relative to virtual-screen origin from computer_screenshot.virtual_offset.' },
-        action: { type: 'string', enum: ['click', 'right_click', 'double_click'], description: 'Default click.' },
+        ref: { type: 'string', description: 'Element ref from computer_screenshot / computer_elements, e.g. "e12" or "@e12".' },
+        name: { type: 'string', description: 'Accessible name / visible text of the control in the focused window.' },
+        coordinate: { ...COORD, description: 'Fallback: [x, y] relative to virtual-screen origin. Prefer ref or name.' },
+        action: { type: 'string', enum: ['click', 'right_click', 'double_click', 'middle_click'], description: 'Default click.' },
         expect_window: EXPECT_WINDOW,
+        no_invoke: { type: 'boolean', description: 'Skip the UI Automation action and always send a synthetic mouse click.' },
       },
-      required: ['coordinate'],
+      required: [],
     },
     output: textOut({ required: ['clicked'] }),
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       gate('computer_click');
-      const point = [Math.round(Number(args.coordinate[0])), Math.round(Number(args.coordinate[1]))];
-      const refusal = await expectWindowGuard(args.expect_window, exec);
-      if (refusal) return { clicked: `[${point[0]},${point[1]}] — 未点击`, ...refusal };
       const cfg = getConfig() ?? {};
-      let before = null;
-      if (cfg.verify_actions !== false) {
-        try { before = (await ctxPs({ action: 'foreground' }, exec)).window; } catch { before = null; }
-      }
-      const res = await runPs('input.ps1', { action: 'click', coordinate: args.coordinate, action2: args.action ?? 'click' }, { signal: exec?.signal });
-      const probe = await probeContext(exec, point);
-      const after = probe?.foreground ?? null;
+      const payload = {
+        action: 'click',
+        button: args?.action ?? 'click',
+        expectWindow: args?.expect_window,
+        probe: cfg.verify_actions !== false,
+      };
+      if (args?.no_invoke === true) payload.no_invoke = true;
 
-      const out = { clicked: res.cursor };
-      const element = describeElement(probe);
-      if (element) out.at = element;
-      if (before && after) {
-        out.foreground_before = before.title || `pid ${before.pid}`;
-        out.foreground_after = after.title || `pid ${after.pid}`;
-        // The click landed inside the window that just came forward, which is
-        // exactly the activation-click failure: it was spent raising the window.
-        const changed = before.hwnd !== after.hwnd;
-        const inside = Array.isArray(after.rect)
-          && point[0] >= after.rect[0] && point[0] <= after.rect[2]
-          && point[1] >= after.rect[1] && point[1] <= after.rect[3];
-        if (changed && inside) {
-          out.activated_only = true;
-          // Heuristic, with one honest false positive: a click that CLOSES a
-          // dialog also brings the window beneath it forward, producing the same
-          // signature. Replaying blindly could then apply the action twice, so
-          // the hint asks the caller to check rather than to just retry.
-          out.hint = '这次点击很可能只把窗口激活、并未命中控件——请重新执行同一次点击；'
-            + '但如果这一下本来就是「关闭对话框/菜单」让下方窗口浮上来，则属正常。'
-            + '先看 foreground_after 是不是你预期的那个窗口，再决定要不要重放。';
+      const refArg = typeof args?.ref === 'string' ? args.ref.trim() : '';
+      const nameArg = typeof args?.name === 'string' ? args.name.trim() : '';
+
+      if (refArg) {
+        const hit = lookupRef(refArg);
+        if (!hit) {
+          throw new Error(
+            `computer_click: 引用 ${refArg} 不认识（可能来自更早的截图）。` +
+            `请先重新 computer_screenshot，或改用 name/coordinate。当前可用：${refInventory().join(', ') || '（空）'}`
+          );
         }
+        payload.target = {
+          hwnd: hit.hwnd,
+          name: hit.name,
+          type: hit.type,
+          automationId: hit.automationId,
+          rect: hit.rect,
+        };
+      } else if (nameArg) {
+        payload.name = nameArg;
+      } else if (Array.isArray(args?.coordinate) && args.coordinate.length === 2) {
+        payload.coordinate = [Math.round(Number(args.coordinate[0])), Math.round(Number(args.coordinate[1]))];
+      } else {
+        throw new Error('computer_click: 需要 ref、name 或 coordinate 之一');
+      }
+
+      const res = await runPs('act.ps1', payload, { signal: exec?.signal });
+
+      if (res.refused) {
+        const focused = res.focused_window ?? {};
+        return {
+          clicked: '未点击（已拒绝）',
+          refused: true,
+          expected_window: res.expected_window,
+          focused_window: `${focused.title || '(无标题)'} (pid ${focused.pid ?? 0})`,
+          hint: `已拒绝发送输入：当前前景窗口「${focused.title || '(无标题)'}」不含「${res.expected_window}」。`
+            + '请先用 computer_activate_window 聚焦目标窗口后重试；确实要打到当前焦点就把 expect_window 去掉。',
+        };
+      }
+      if (res.ambiguous) {
+        return {
+          clicked: '未点击（匹配到多个）',
+          ambiguous: true,
+          matches: res.matches,
+          hint: `有 ${(res.matches ?? []).length}+ 个控件的名称含「${nameArg}」，无法确定是哪一个。`
+            + '请改用 ref（先用 computer_elements 取引用），或给出各自的完整名称。',
+        };
+      }
+
+      const out = { clicked: `[${(res.clicked ?? []).join(',')}]` };
+      out.method = res.method;
+      if (res.moved_to) out.pointer_landed = `[${res.moved_to.join(',')}]`;
+      if (res.target) {
+        const t = res.target;
+        out.target = `${t.name ? `"${t.name}" ` : ''}${t.type ?? ''}${t.rect ? ` rect=[${t.rect.join(',')}]` : ''}`;
+      }
+      if (res.at) {
+        out.under_cursor = `${res.at.name ? `"${res.at.name}" ` : ''}${res.at.type ?? ''}`;
+        if (res.at.matches_target === true) out.hit_confirmed = true;
+        else if (res.at.matches_target === false) out.hit_confirmed = false;
+      }
+      if (res.foreground_before || res.foreground_after) {
+        out.foreground_before = res.foreground_before ?? '';
+        out.foreground_after = res.foreground_after ?? '';
+      }
+      if (res.pointer_clamped) {
+        out.hint = `指针被系统限制到 [${(res.moved_to ?? []).join(',')}]，与请求的 ${out.clicked} 不一致。`;
+      }
+      if (res.activated_only) {
+        out.activated_only = true;
+        out.hint = '这次点击很可能只把窗口激活、并未命中控件——请重新执行同一次点击；'
+          + '但如果这一下本来就是「关闭对话框/菜单」让下方窗口浮上来，则属正常。先看 foreground_after 是不是你预期的窗口。';
       }
       return out;
     },
@@ -509,29 +707,57 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
 
   const computerType = {
     name: 'computer_type',
-    description: [`Type arbitrary UTF-16 text (supports Chinese) at the current focus. ${HEAD}`, 'Parameters: text (required string), send_enter (optional bool — press Enter after typing), expect_window (optional string — refuse unless the foreground window title contains it).', 'Input uses SendInput KEYEVENTF_UNICODE, so any character, including CJK, is entered reliably.' ],
+    description: [
+      'Type arbitrary UTF-16 text (supports Chinese) at the current focus.',
+      'Give ref or name to focus a specific field first (done through UI Automation, so it works even if the field is partly covered); otherwise the text goes wherever the keyboard focus already is.',
+      `${HEAD}`,
+      'Parameters: text (required string), send_enter (optional — press Enter after typing), ref / name (optional field to focus first), expect_window (optional — refuse unless the foreground window title contains it).',
+      'Input uses SendInput KEYEVENTF_UNICODE, so any character, including CJK, is entered reliably.',
+    ].join(' '),
     parameters: {
       type: 'object', additionalProperties: true,
-      properties: { text: { type: 'string' }, send_enter: { type: 'boolean' }, expect_window: EXPECT_WINDOW },
+      properties: {
+        text: { type: 'string' },
+        send_enter: { type: 'boolean' },
+        ref: { type: 'string', description: 'Element ref of the field to focus first, e.g. "e7".' },
+        name: { type: 'string', description: 'Accessible name of the field to focus first.' },
+        expect_window: EXPECT_WINDOW,
+      },
       required: ['text'],
     },
     output: textOut({ required: ['chars'] }),
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       gate('computer_type');
-      const refusal = await expectWindowGuard(args.expect_window, exec);
-      if (refusal) return { chars: 0, ...refusal };
       const cfg = getConfig();
-      const res = await runPs('input.ps1', {
-        action: 'type', text: String(args.text), sendEnter: !!args.send_enter,
+      const payload = {
+        action: 'type',
+        text: String(args.text),
+        sendEnter: !!args.send_enter,
         typingIntervalMs: cfg.typing_interval_ms || 0,
-      }, { signal: exec?.signal });
-      // Report where the text actually went: typing into the wrong window is
-      // silent otherwise.
-      const probe = await probeContext(exec);
+        expectWindow: args?.expect_window,
+      };
+      const refArg = typeof args?.ref === 'string' ? args.ref.trim() : '';
+      if (refArg) {
+        const hit = lookupRef(refArg);
+        if (!hit) throw new Error(`computer_type: 引用 ${refArg} 不认识，请先重新 computer_screenshot / computer_elements`);
+        payload.target = { hwnd: hit.hwnd, name: hit.name, type: hit.type, automationId: hit.automationId, rect: hit.rect };
+      } else if (typeof args?.name === 'string' && args.name.trim()) {
+        payload.name = args.name.trim();
+      }
+      const res = await runPs('act.ps1', payload, { signal: exec?.signal });
+      if (res.refused) {
+        const focused = res.focused_window ?? {};
+        return {
+          chars: 0,
+          refused: true,
+          expected_window: res.expected_window,
+          focused_window: `${focused.title || '(无标题)'} (pid ${focused.pid ?? 0})`,
+          hint: `已拒绝输入：当前前景窗口「${focused.title || '(无标题)'}」不含「${res.expected_window}」。请先 computer_activate_window 聚焦。`,
+        };
+      }
       const out = { chars: res.chars };
-      const focused = describeWindow(probe?.foreground);
-      if (focused) out.focused_window = focused;
+      if (res.focused_window !== undefined) out.focused_window = `${res.focused_window || '(无标题)'} (pid ${res.focused_pid ?? 0})`;
       return out;
     },
   };
@@ -548,20 +774,28 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       gate('computer_keypress');
-      const refusal = await expectWindowGuard(args.expect_window, exec);
-      if (refusal) return { keys: '', ...refusal };
-      const res = await runPs('input.ps1', { action: 'keypress', keys: args.keys }, { signal: exec?.signal });
-      const probe = await probeContext(exec);
+      const res = await runPs('act.ps1', {
+        action: 'keypress', keys: args.keys, expectWindow: args?.expect_window,
+      }, { signal: exec?.signal });
+      if (res.refused) {
+        const focused = res.focused_window ?? {};
+        return {
+          keys: '',
+          refused: true,
+          expected_window: res.expected_window,
+          focused_window: `${focused.title || '(无标题)'} (pid ${focused.pid ?? 0})`,
+          hint: `已拒绝发送按键：当前前景窗口「${focused.title || '(无标题)'}」不含「${res.expected_window}」。请先 computer_activate_window 聚焦。`,
+        };
+      }
       const out = { keys: res.keys };
-      const focused = describeWindow(probe?.foreground);
-      if (focused) out.focused_window = focused;
+      if (res.focused_window !== undefined) out.focused_window = res.focused_window || '(无标题)';
       return out;
     },
   };
 
   const computerScroll = {
     name: 'computer_scroll',
-    description: [`Scroll at a coordinate. ${HEAD}`, 'Parameters: coordinate (required [x,y]), direction (optional: down [default] | up | left | right), clicks (optional number of wheel notches, default from config scroll_units).'],
+    description: [`Scroll at a point. ${HEAD}`, 'Parameters: coordinate (required [x,y] — the point whose scrollable area should move), direction (optional: down [default] | up | left | right), clicks (optional number of wheel notches, default from config scroll_units).'],
     parameters: {
       type: 'object', additionalProperties: true,
       properties: {
@@ -576,12 +810,16 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       gate('computer_scroll');
-      const refusal = await expectWindowGuard(args.expect_window, exec);
-      if (refusal) return { scrolled: '未滚动', ...refusal };
       const cfg = getConfig();
       const clicks = typeof args.clicks === 'number' && args.clicks > 0 ? args.clicks : (cfg.scroll_units || 1);
-      await runPs('input.ps1', { action: 'scroll', coordinate: args.coordinate, direction: args.direction ?? 'down', clicks }, { signal: exec?.signal });
-      return { scrolled: `${args.direction ?? 'down'} ${clicks} tick(s) at [${args.coordinate}]` };
+      const res = await runPs('act.ps1', {
+        action: 'scroll', coordinate: args.coordinate, direction: args.direction ?? 'down', clicks,
+        expectWindow: args?.expect_window,
+      }, { signal: exec?.signal });
+      if (res.refused) {
+        return { scrolled: '未滚动（已拒绝）', refused: true, hint: `当前前景窗口不含「${res.expected_window}」，请先 computer_activate_window 聚焦。` };
+      }
+      return { scrolled: `${args.direction ?? 'down'} ${clicks} tick(s) at [${res.cursor?.join(',') ?? args.coordinate}]` };
     },
   };
 
@@ -602,12 +840,14 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       gate('computer_drag');
-      const refusal = await expectWindowGuard(args.expect_window, exec);
-      if (refusal) {
+      const res = await runPs('act.ps1', {
+        action: 'drag', from: args.start_coordinate, to: args.end_coordinate,
+        holdKeys: args.hold_keys ?? [], expectWindow: args?.expect_window,
+      }, { signal: exec?.signal });
+      if (res.refused) {
         const from = Array.isArray(args.start_coordinate) ? args.start_coordinate.join(',') : '';
-        return { from: `[${from}] 未拖拽`, to: '', ...refusal };
+        return { from: `[${from}] 未拖拽`, to: '', refused: true, hint: `当前前景窗口不含「${res.expected_window}」，请先 computer_activate_window 聚焦。` };
       }
-      const res = await runPs('input.ps1', { action: 'drag', from: args.start_coordinate, to: args.end_coordinate, holdKeys: args.hold_keys ?? [] }, { signal: exec?.signal });
       return { from: res.from, to: res.to };
     },
   };
@@ -624,8 +864,13 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
     isConcurrencySafe: () => false,
     async execute(args, exec) {
       gate('computer_move_mouse');
-      const res = await runPs('input.ps1', { action: 'move', coordinate: args.coordinate }, { signal: exec?.signal });
-      return { moved_to: res.cursor };
+      const res = await runPs('act.ps1', { action: 'move', coordinate: args.coordinate }, { signal: exec?.signal });
+      const out = { moved_to: res.cursor };
+      if (res.requested && (res.cursor?.[0] !== res.requested[0] || res.cursor?.[1] !== res.requested[1])) {
+        out.pointer_clamped = true;
+        out.hint = `指针被系统限制到 [${res.cursor.join(',')}]，与请求的 [${res.requested.join(',')}] 不一致。`;
+      }
+      return out;
     },
   };
 
@@ -654,7 +899,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
     isConcurrencySafe: () => false,
     async execute(_args, exec) {
       gate('computer_get_cursor_position');
-      const res = await runPs('input.ps1', { action: 'getpos' }, { signal: exec?.signal });
+      const res = await runPs('act.ps1', { action: 'getpos' }, { signal: exec?.signal });
       return { x: res.cursor[0], y: res.cursor[1] };
     },
   };
@@ -694,16 +939,18 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
 
   // -- computer_list_windows -------------------------------------------------
   // Reading a window rectangle off a downscaled screenshot is the single most
-  // common cause of a misclick (observed in practice: a 1.84x downscale turned
-  // a visual estimate into a ~240px error). Ask the OS instead.
+  // common cause of a misclick. Ask the OS instead. `rect` is the DWM extended
+  // frame - the pixels actually on screen; `window_rect` is the raw GetWindowRect
+  // value, which is 8 px larger on every side because of the invisible resize
+  // border, and using that for window-relative aiming is a systematic 8 px error.
   const computerListWindows = {
     name: 'computer_list_windows',
     description: [
-      'List visible top-level windows in z-order (topmost first) with their EXACT virtual-screen pixel rectangles.',
-      'Prefer this over estimating a window position from a screenshot — reading coordinates off a downscaled image is the most common source of misclicks.',
+      'List visible top-level windows in z-order (topmost first) with their EXACT on-screen pixel rectangles.',
+      'rect is the visible frame (DWM extended frame bounds). window_rect is the raw Win32 rectangle, which is ~8 px larger on each side because it includes the invisible resize border — use rect for anything you aim at.',
       'Parameters: min_width / min_height (optional, default 1) drop tiny windows; foreground_only (optional) returns just the focused window.',
-      'Returns { count, zOrderTopFirst, windows:[{ hwnd, pid, title, rect:[left,top,right,bottom], width, height, minimized, foreground }] }.',
-      'Pass an entry\'s hwnd to computer_activate_window to focus it, or use rect to compute a capture region / click target.',
+      'Returns { count, zOrderTopFirst, windows:[{ hwnd, pid, title, class, rect, window_rect, client_rect, width, height, minimized, foreground }] }.',
+      'Pass an entry\'s hwnd to computer_activate_window to focus it, or to computer_elements to read its controls.',
     ].join(' '),
     parameters: {
       type: 'object', additionalProperties: true,
@@ -719,14 +966,14 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
     async execute(args, exec) {
       gate('computer_list_windows');
       if (args?.foreground_only) {
-        const res = await ctxPs({ action: 'foreground' }, exec);
+        const res = await runPs('act.ps1', { action: 'foreground' }, { signal: exec?.signal });
         return { count: res.window ? 1 : 0, zOrderTopFirst: true, windows: res.window ? [res.window] : [] };
       }
-      const res = await ctxPs({
+      const res = await runPs('act.ps1', {
         action: 'windows',
         minWidth: typeof args?.min_width === 'number' ? args.min_width : 1,
         minHeight: typeof args?.min_height === 'number' ? args.min_height : 1,
-      }, exec);
+      }, { signal: exec?.signal });
       return { count: res.count, zOrderTopFirst: res.zOrderTopFirst, windows: res.windows };
     },
   };
@@ -741,7 +988,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
       'Bring a window to the foreground deliberately, WITHOUT spending a click on it.',
       'This exists because the first synthetic click on a background window is consumed by activation — it never reaches the control, and nothing reports that it was lost. Focus first, then click.',
       'Parameters: hwnd (from computer_list_windows, preferred) OR pid OR title (case-insensitive substring).',
-      'Returns { requested, foreground } naming the window that actually ended up focused.',
+      'Returns { requested, foreground, activated }. When activated is false the result also says whether a HIDDEN window is holding the foreground, which needs a different remedy than a window that simply refused to come forward.',
     ].join(' '),
     parameters: {
       type: 'object', additionalProperties: true,
@@ -761,14 +1008,19 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
       else if (args?.pid !== undefined && args?.pid !== null) payload.pid = args.pid;
       else if (typeof args?.title === 'string' && args.title.trim() !== '') payload.title = args.title.trim();
       else throw new Error('computer_activate_window: 需要 hwnd / pid / title 之一');
-      const res = await ctxPs(payload, exec);
+      const res = await runPs('act.ps1', payload, { signal: exec?.signal });
       const out = { requested: res.requested, foreground: describeWindow(res.foreground) };
       // "The window never came forward" is a RESULT, not an error: report it with
       // the foreground record and the hint. Throwing here only produced a generic
       // PowerShell failure message with none of that detail.
       if (res.activated === false) {
         out.activated = false;
-        if (typeof res.hint === 'string' && res.hint !== '') out.hint = res.hint;
+        if (res.foreground_visible === false) {
+          out.hint = `激活未生效：系统仍把窗口 hwnd ${res.foreground?.hwnd ?? 0}「${res.foreground?.title ?? ''}」当作前台，但它当前并不可见`
+            + '（常见于系统正在隐藏/切换窗口）。再调用一次 computer_activate_window，或直接点一下目标窗口的标题栏。';
+        } else {
+          out.hint = '激活未生效：请求的窗口没有成为前台（可能被 UWP 或更高权限的窗口占住）。重试通常有效，也可以直接点它的标题栏。';
+        }
       }
       return out;
     },
@@ -776,6 +1028,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
 
   const tools = [
     computerScreenshot,
+    computerElements,
     computerListWindows,
     computerClick,
     computerType,

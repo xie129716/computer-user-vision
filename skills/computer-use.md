@@ -1,18 +1,23 @@
 # Computer Use（电脑操作）—— 读屏 + 操作鼠标键盘（纯本地，不调用外部 API）
 
-computer-user 插件提供 12 个 `computer_*` 工具，让模型像人手一样操作本机 Windows
-桌面：读屏 → 定位目标 → 点击/输入/按键/滚动/拖拽 → 截图验证。
+computer-user 插件提供 13 个 `computer_*` 工具，让模型像人手一样操作本机 Windows
+桌面：读屏 → **按元素引用定位目标** → 点击/输入/按键/滚动/拖拽 → 验证。
 
 > **三条铁律（都是踩过坑总结出来的）**：
 >
-> 1. **不要靠缩略图目测坐标**。整屏截图在视觉模式下会被压到 64 万像素以内（1920×1080
->    会变成约 1045×588，倍率 1.84），在缩小的图上量像素必然偏。要窗口位置就用
->    `computer_list_windows` 拿 OS 给的**精确矩形**；要读坐标就给截图加 `grid`。
+> 1. **用 `ref` / `name` 定位，不要目测像素坐标**。`computer_screenshot` 现在会附带
+>    当前前台窗口里所有可操作控件的**元素引用表**（形如 `e12 Button "保存"`）。
+>    `computer_click` 可以直接接受 `{ref:"e12"}` 或 `{name:"保存"}`：引用由 UI
+>    Automation 解析成控件的**精确屏幕矩形**再点，**完全不需要像素换算**。
+>    在缩小过的截图上量像素是点击偏移的头号原因——1920×1080 会被压到约 1045×588，
+>    1 个图像像素约等于 1.84 个屏幕像素，一个 22px 高的按钮在图上只有 12px 高。
+>    只有目标**不在**元素表里时，才退回 `coordinate` 并按 `screen_mapping` 换算。
 > 2. **点后台窗口前先 `computer_activate_window`**。对**非前台窗口**的第一下合成点击
 >    只会激活该窗口，**不会传给控件，而且没有任何报错**。先置前再点，或者检查点击返回
 >    里的 `activated_only`。
-> 3. **每步都验证**。点击返回里的 `at` 告诉你光标下到底是什么控件；`foreground_after`
->    告诉你操作落到了哪个窗口。对不上就重来，不要连着点。
+> 3. **每步都验证**。点击返回里的 `under_cursor` 告诉你光标下到底是什么控件，
+>    `hit_confirmed` 直接告诉你是否命中了目标；`foreground_after` 告诉你操作落到了
+>    哪个窗口。对不上就重来，不要连着点。
 
 > **看屏有两种模式，先确认自己属于哪一种**：
 >
@@ -35,39 +40,76 @@ computer-user 插件提供 12 个 `computer_*` 工具，让模型像人手一样
 ## 标准闭环（每步都按这个顺序）
 
 1. **看**：`computer_screenshot` 截屏。视觉模式直接观察附加的图片；路径模式拿 `path`。
-2. **换算坐标（视觉模式必做）**：图片像素 ≠ 屏幕像素。按返回里的 `screen_mapping`
-   换算：
-   ```
-   screen_x = virtual_offset[0] + image_x * screen_per_pixel[0]
-   screen_y = virtual_offset[1] + image_y * screen_per_pixel[1]
-   ```
-   换算结果就是 `computer_click` 等工具要填的**虚拟屏物理像素**坐标。
-3. **定位目标窗口（推荐先做）**：`computer_list_windows` 返回所有可见顶层窗口的
-   **精确虚拟屏矩形**和 z 序。拿到 `hwnd` 后用 `computer_activate_window` 把它置前——
-   这一步同时解决了「窗口被遮挡」和「首击只激活」两个问题。
-4. **定位目标区域**：优先只截目标窗口（见下），画面越小越清晰、坐标越准。
-4. **做**：`computer_click` / `computer_type` / `computer_keypress` /
-   `computer_scroll` / `computer_drag` / `computer_move_mouse`。
-5. **验**：再 `computer_screenshot`（同一 region），确认达到预期后再进行下一步。
-6. 等动画/加载用 `computer_wait`；看当前鼠标位置用 `computer_get_cursor_position`。
+   两种模式都会返回**当前前台窗口的元素引用表**。
+2. **定位**：在元素表里找目标，记下它的 `ref`（如 `e12`）或可见文字（`name`）。
+   - 表太小或窗口变了 → `computer_elements` 重新枚举（不截图，更快）。
+   - 目标窗口不对 → `computer_list_windows` 拿 `hwnd`，`computer_activate_window` 置前，
+     再重新截图/枚举。
+3. **做**：`computer_click {ref:"e12"}` 或 `{name:"保存"}`；输入用
+   `computer_type`（带 `ref`/`name` 会先把焦点放进那个输入框，比先点一下更稳）；
+   还有 `computer_keypress` / `computer_scroll` / `computer_drag` / `computer_move_mouse`。
+4. **验**：看返回里的 `method`（`invoke`/`toggle`/`select` = 直接调用控件动作，
+   `mouse` = 在控件中心合成点击）、`hit_confirmed`、`under_cursor`、`foreground_after`。
+   需要重看画面就再截一次。
+5. 等动画/加载用 `computer_wait`；看当前鼠标位置用 `computer_get_cursor_position`。
+
+**什么时候才用坐标**：目标在元素表里找不到（自绘控件、游戏画面、画布内容、UIA 未暴露的
+区域）时。此时用 `screen_mapping` 换算，或先给截图加 `grid` 再看刻度：
+
+```
+screen_x = virtual_offset[0] + image_x * screen_per_pixel[0]
+screen_y = virtual_offset[1] + image_y * screen_per_pixel[1]
+```
 
 **一次多读、少点几次**：需要看多个位置时，先截大图定位大致区域，再对可疑区域单独
 `computer_screenshot({region:[…]})` 看清细节；不要「点一下截一次」无谓循环。
+`annotate:true` 会把引用编号画到图上，**只在控件稀疏**时好用（密集控件会互相遮挡，
+此时用元素表）。
 
 ---
 
 ## 定位与验证工具（专治坐标不准与静默失败）
+
+### 元素引用（`ref` / `name`）—— 默认的定位方式
+
+`computer_screenshot` 与 `computer_elements` 都会枚举当前窗口里**可操作的控件**，
+每个给一个引用：
+
+```
+elements (37): e1 Pane "T11" | e2 Pane "T12" | e3 Button "保存" {Invoke} | …
+```
+
+- `computer_click({ ref: "e3" })` —— 按引用点，**控件的精确矩形由 UI Automation 给出**。
+- `computer_click({ name: "保存" })` —— 按控件可见文字点；**同名多个会拒绝并列出候选**，
+  不会乱猜。
+- `computer_type({ text: "hello", name: "搜索" })` —— 先把焦点放进那个输入框再输入，
+  比"先点一下再打字"少一步也更稳。
+
+引用的有效期：插件保留**最近两次**枚举结果，所以上一次截图里的 `ref` 仍然可用；点击时
+会用 `automationId` / 名称 / 类型在**实时**的 UI 树上重新定位，**窗口移动了也不会点偏**。
+目标已经不在屏幕上时会明确报错并提示重新截图，**不会静默点到别处**。
+
+`{Invoke}` / `{Toggle}` / `{SelectionItem}` 表示该控件支持对应的 UIA 动作，点击会**直接
+调用控件动作**（返回 `method: "invoke"`），连鼠标都不用动；否则退回在控件中心合成点击
+（`method: "mouse"`）。有些框架只暴露名字和矩形、不暴露动作——例如 **WinForms 按钮在
+UIA 里是 `Pane` 且没有任何 pattern**——这时仍然靠**精确矩形**保证点中，所以不要因为
+"看起来不是 Button" 就放弃用引用。
 
 ### `computer_list_windows` —— 不要猜窗口在哪
 
 返回所有可见顶层窗口，按 z 序（最上层在前），每项含：
 
 ```
-{ hwnd, pid, title, rect:[left,top,right,bottom], width, height, minimized, foreground }
+{ hwnd, pid, title, class, rect:[left,top,right,bottom], window_rect, client_rect, width, height, minimized, foreground }
 ```
 
-`rect` 是**像素级精确**的虚拟屏坐标。要拿某窗口做截图 region 或点击目标，直接用它算，
-不要从截图上目测。`min_width` / `min_height` 过滤小窗口，`foreground_only` 只看前台。
+`rect` 是 DWM **可见边框**——真正显示在屏幕上的像素，**像素级精确**。拿窗口做截图
+region、算窗口内相对位置，都用它。`min_width` / `min_height` 过滤小窗口，
+`foreground_only` 只看前台。
+
+> `window_rect` 是 Win32 `GetWindowRect` 的原值，**每边比可见框大 8px**（那是 Windows
+> 留的不可见缩放边框），拿它算窗口内位置会**系统性偏 8px**。所以两个都给出来，但
+> **瞄准一律用 `rect`**，并且优先用 `ref`。
 
 ### `computer_activate_window` —— 点之前先置前
 
@@ -86,7 +128,10 @@ computer_activate_window({ hwnd: 132374 })     # 或 { pid } 或 { title: "豆�
 ### 操作后回报（设置 `verify_actions`，默认开）
 
 - `computer_click` 额外返回：
-  - `at`：光标下的 UI 元素（名称 / 控件类型 / class / pid）——**直接告诉你点到了什么**
+  - `method`：`invoke` / `toggle` / `select` / `expand` = 直接调用了控件动作；
+    `mouse` = 在控件中心合成的鼠标点击
+  - `under_cursor`：光标下的 UI 元素——**直接告诉你点到了什么**
+  - `hit_confirmed`：`true` 表示光标下的控件就是目标控件；`false` 说明点到了别的东西
   - `foreground_before` / `foreground_after`：前台窗口是否被改变
   - `activated_only`：是否只是激活了窗口
 - `computer_type` / `computer_keypress` 额外返回 `focused_window`——输入到底送进了
@@ -143,18 +188,16 @@ DeepSeek 视觉投影预算一致）以内，避免服务端再次降采样而�
 
 Windows 下标准做法（纯本地 PowerShell）：
 
-1. 找到目标进程（如 `Get-Process -Name "*Deepseek Harness*"`），确定主窗口句柄。
-2. **必须用 DPI 感知的 `GetWindowRect`** 拿物理像素边界：
-   ```
-   Add-Type 'public class DpiAware { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }'
-   [DpiAware]::SetProcessDPIAware() | Out-Null
-   GetWindowRect(hwnd) → (left, top, right, bottom)   # 物理像素
-   ```
-   > 注意：**不调用 `SetProcessDPIAware()` 时拿到的是逻辑坐标**（150% 缩放下会被
-   > 缩小），与截图/点击的物理像素不一致，会把窗口定位到错误位置。
-3. 把窗口矩形换算成屏幕比例，截图时只截这个 region：
+1. **直接用 `computer_list_windows`**：它已经返回每个窗口的精确 `rect`，不必自己写
+   PowerShell 去枚举窗口。
+2. 插件侧已经处理过 DPI：`act.ps1` 启动时会把进程提升到 **PerMonitorV2** 感知。
+   这一点很关键——`powershell.exe` 默认是 DPI-**unaware**，在带缩放的显示器上
+   Windows 会把所有坐标虚拟化，那是"对不齐"的另一个系统性来源。
+   > 判断方法：截图返回里的 `monitor_dpi` 是 96 说明当前显示器无缩放；不是 96 时
+   > **更应该用 `ref` / `name`**，而不是自己算坐标。
+3. 把窗口 `rect` 换算成屏幕比例，截图时只截这个 region：
    `region: [left/W, top/H, right/W, bottom/H]`。
-4. 窗口移动/缩放后要重新定位。
+4. 窗口移动/缩放后要 **重新 `computer_list_windows`**，或直接重新截图拿新的引用。
 
 视觉模式下这一步是**可选优化**（你能直接看到画面，不会把桌面图标误当按钮）；但
 `region` 对**看清细节**帮助很大。
@@ -163,14 +206,15 @@ Windows 下标准做法（纯本地 PowerShell）：
 
 ## 一击即中：点击纪律
 
-- **确认坐标后再点**：目标元素的中心点最好；元素中心未必是按钮可点区，必要时在
-  附近小范围试探一次。
+- **优先 `ref` / `name`，不要自己算坐标**：引用由系统解析成控件的精确矩形，从根上消掉
+  了「目测偏几像素」这个问题。能用引用就不要用 `coordinate`。
 - **不要连续多点**：许多 UI（设置页/浮层）是**点击开关**——点一次打开，再点一次又
-  关掉。点一次 → 截图验证 → 按结果决定下一步，绝不盲目连点。
-- **点击后必验证**：每次 `computer_click` 后 `computer_screenshot`（同 region）确认
-  是否达到预期；没达到再调整一小步（如 ±10px）。
-- **坐标基准要核实**：视觉模式下务必用 `screen_mapping` 换算，别把图片坐标直接当屏幕
-  坐标填进去——`screen_per_pixel` 通常明显大于 1（例如整屏被压到 55% 时约为 1.8）。
+  关掉。点一次 → 看返回的 `hit_confirmed` / `under_cursor`（必要时再截图）→ 按结果
+  决定下一步，绝不盲目连点。
+- **点击后必验证**：`hit_confirmed: true` 基本可以放心；`false` 或 `activated_only`
+  就重来一次。
+- **非用坐标不可时**：务必用 `screen_mapping` 换算，别把图片坐标直接当屏幕坐标填进去
+  ——`screen_per_pixel` 通常明显大于 1（整屏被压到 55% 时约为 1.84）。
 
 ---
 
@@ -258,10 +302,10 @@ Windows 下标准做法（纯本地 PowerShell）：
 ## 坐标系与精度
 
 - 坐标 = **相对多屏虚拟屏原点的物理像素**（`computer_screenshot` 的
-  `virtual_offset` 即该原点；capture.ps1 已 `SetProcessDPIAware`，与物理像素一致）。
+  `virtual_offset` 即该原点）。
 - 视觉模式换算：`screen = virtual_offset + image_pixel * screen_per_pixel`。
-- 高分屏缩放：截图/输入都按物理像素，无系统缩放偏移；**窗口定位脚本同样要
-  DPI 感知**才能对齐（见上文）。
+- 高分屏缩放：执行器已把进程提升到 **PerMonitorV2** DPI 感知，截图/输入都按物理像素；
+  截图返回的 `monitor_dpi` 不是 96 时说明当前显示器有缩放，此时**优先用 `ref`/`name`**。
 - 多显示器：`virtual_offset` 可能是非零（副屏在原点左侧/上方时为负）。
 
 ---

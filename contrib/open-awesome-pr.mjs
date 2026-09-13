@@ -63,7 +63,7 @@ const TARBALL = `${REPO_URL}/releases/latest/download/computer-user.tgz`;
  * The one file this PR adds.
  *
  * Every clause is a claim the reviewer can check against the code, which is what
- * the guide asks for — and why there are no adjectives here: "12 computer_* tools"
+ * the guide asks for — and why there are no adjectives here: "13 computer_* tools"
  * is countable, `expect_window` and the Stop button are greppable, and
  * "vision-native" would only have been a word. A description containing ": "
  * must be quoted.
@@ -73,8 +73,8 @@ name: ${OWNER}/${PLUGIN}
 category: tools
 tarball: ${TARBALL}
 description:
-  en: 'Windows desktop control for a fork of computer-user: 12 computer_* tools, computer_screenshot returning the picture as a real image with an image-to-screen pixel mapping, an expect_window guard that refuses input when the wrong window has focus, and a control indicator whose Stop button or Ctrl+Alt+Esc blocks every call until the user re-approves.'
-  zh: 'computer-user 分叉的 Windows 桌面操控：12 个 computer_* 工具，computer_screenshot 把画面作为真实图像返回并附带图像→屏幕像素映射；expect_window 前置校验在前台窗口不对时拒绝发送输入；控制指示器的「停止控制」按钮或 Ctrl+Alt+Esc 会阻断所有调用，直到用户重新授权。'
+  en: 'Windows desktop control for a fork of computer-user: 13 computer_* tools. computer_screenshot and computer_elements return the focused window controls as refs, and computer_click accepts a ref or the control visible text, so a click lands on the exact control rectangle instead of on a pixel estimated from a downscaled screenshot; an expect_window guard refuses input when the wrong window has focus; a control indicator Stop button or Ctrl+Alt+Esc blocks every call until the user re-approves.'
+  zh: 'computer-user 分叉的 Windows 桌面操控：13 个 computer_* 工具。computer_screenshot 与 computer_elements 把前台窗口的 UI Automation 控件作为引用返回，computer_click 可直接接受引用或控件可见文字，因此点击落在控件的精确矩形上，而不是从缩小截图上估计出来的像素；expect_window 前置校验在前台窗口不对时拒绝发送输入；控制指示器的「停止控制」按钮或 Ctrl+Alt+Esc 会阻断所有调用，直到用户重新授权。'
 `;
 
 const TITLE = `Add ${OWNER}/${PLUGIN}`;
@@ -82,15 +82,34 @@ const TITLE = `Add ${OWNER}/${PLUGIN}`;
 const BODY = `Adds one entry for \`${OWNER}/${PLUGIN}\` under \`tools\`.
 
 **What it is.** A Windows desktop-control plugin: it reads the screen and drives the mouse and
-keyboard. The screenshot rides the tool result as a real image block together with a
-\`screen_per_pixel\` mapping, so an image-capable model looks at the screen and clicks real
-coordinates; a text-only route falls back to a PNG path. 12 \`computer_*\` tools.
+keyboard. A screenshot rides the tool result as a real image block, and the focused window's
+controls come back as refs, so a click is addressed as \`computer_click {ref:"e12"}\` (or by the
+control visible text) and lands on the control exact rectangle; a text-only route falls back to a
+PNG path. 13 \`computer_*\` tools.
 
 **It is an unofficial fork** of [jing-hy/computer-user](https://github.com/jing-hy/computer-user)
 (MIT; the copyright notice travels with the code in \`LICENSE\`). Upstream no longer loads on current
 DSH — a named export that no longer exists fails the whole ES module — and it only knew how to be
 looked at through an external OCR tool. What this fork adds, all of it in the repository:
 
+- **Element refs, so a click stops depending on a pixel estimate.** A 1920x1080 desktop is
+  2,073,600 px, above the 640,000 px vision budget, so the preview a model reasons about is
+  ~1045x588 — one image pixel is 1.84 screen pixels and a 22 px toolbar button is 12 px tall in
+  that picture. \`computer_screenshot\` and the new \`computer_elements\` now enumerate the focused
+  window's UI Automation controls and return refs; \`computer_click\` takes \`ref\` or \`name\` and
+  the OS supplies the exact rectangle, so the measured click error is 0 px. Enumeration tests
+  capability rather than control type, because a WinForms button reports as \`ControlType.Pane\`
+  with no patterns at all.
+- **Exact geometry, and honest geometry.** \`computer_list_windows\` returns the DWM extended frame
+  bounds as \`rect\` — \`GetWindowRect\` is 8 px larger on every side (it includes the invisible
+  resize border), which made every window-relative aim wrong by 8 px. Both values are reported.
+- **One process per tool call.** Each PowerShell start costs ~380 ms of process creation plus
+  \`Add-Type\` compilation, and a click used to spawn three or four of them (~1.1-1.5 s). The three
+  one-shot scripts are merged into \`src/act.ps1\`; the focus check, ref resolution, the click and
+  the probe now happen in the same process. Moves also use absolute \`SendInput\` over the virtual
+  desktop and are verified before the click follows.
+- **PerMonitorV2 DPI awareness.** \`powershell.exe\` starts DPI-*unaware*, so on a scaled display
+  Windows virtualised every coordinate; the old scripts only reached System-aware.
 - **Pre-flight focus guard.** Every input tool takes an optional \`expect_window\`; on a mismatch
   it refuses *without sending any input* and returns the window it found. Reporting
   \`focused_window\` only *after* typing is a post-mortem — during acceptance a \`Ctrl+H\` meant for

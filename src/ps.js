@@ -15,7 +15,7 @@ export function powerShellScript(name) {
  * it MUST carry a boolean `ok` field. `ok:true` resolves, otherwise we reject
  * with `.error`. Stdout lines before the JSON are tolerated.
  *
- * @param {string} scriptName  'capture.ps1' | 'input.ps1'
+ * @param {string} scriptName  'act.ps1' | 'overlay.ps1'
  * @param {object} payload     JSON payload object
  * @param {{timeoutMs?:number, signal?:AbortSignal}} opts
  * @returns {Promise<object>}  the parsed result object

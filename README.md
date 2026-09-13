@@ -51,11 +51,16 @@ catalog entry says `inputModalities: ["text", "image"]` — such a model can sim
 | 6 | Four graceful fallbacks to the original path contract | `src/tools.js` |
 | 7 | New settings `vision_feedback` (default on) and `vision_max_pixels` (default 640000) | `src/config.js`, `client.js` |
 | 8 | Skill / README / settings-card copy rewritten around the two modes | `skills/`, `README*.md`, `client.js` |
-| 9 | `computer_list_windows` — exact window rectangles from the OS instead of eyeballing a downscaled screenshot | `src/context.ps1`, `src/tools.js` |
-| 10 | `computer_activate_window` — focus a window deliberately, dodging the activation-click trap | `src/context.ps1`, `src/tools.js` |
+| 9 | `computer_list_windows` — exact window rectangles from the OS instead of eyeballing a downscaled screenshot | `src/act.ps1`, `src/tools.js` |
+| 10 | `computer_activate_window` — focus a window deliberately, dodging the activation-click trap | `src/act.ps1`, `src/tools.js` |
 | 11 | Actions report context: the UI element under the cursor, foreground before/after, `activated_only` | `src/tools.js` |
-| 12 | Optional labelled coordinate grid drawn onto screenshots | `src/capture.ps1` |
+| 12 | Optional labelled coordinate grid drawn onto screenshots | `src/act.ps1` |
 | 13 | Codex-style control indicator with a hard user stop | `src/overlay.ps1`, `src/overlay.js` |
+| 14 | **Element refs.** Every screenshot enumerates the focused window's controls; `computer_click` takes `ref` or `name` and UI Automation resolves them to the control's exact rectangle, so a click needs no pixel arithmetic at all. New `computer_elements` tool returns refs without a screenshot. | `src/act.ps1`, `src/tools.js` |
+| 15 | **Window rectangles are the DWM visible frame.** The raw `GetWindowRect` value is 8 px larger on every side (invisible resize border), which made any window-relative aim wrong by 8 px. Both are now reported; `rect` is the one on screen. | `src/act.ps1` |
+| 16 | **PerMonitorV2 DPI awareness.** `powershell.exe` starts DPI-*unaware*, so on a scaled display Windows virtualised every coordinate — a systematic misalignment that is invisible at 100%. | `src/act.ps1` |
+| 17 | **One PowerShell process per tool call** instead of three or four. A single click used to spawn three of them (focus check, before-foreground, click, probe) for ~1.1–1.5 s of pure process and `Add-Type` overhead. | `src/act.ps1`, `src/tools.js` |
+| 18 | `input.ps1` / `context.ps1` / `capture.ps1` merged into one executor, `src/act.ps1` | `src/act.ps1` |
 
 ### The three mistakes this second pass fixes
 
@@ -275,7 +280,7 @@ All of these are also asserted by `verify/` — `registration.mjs`, `overlay.mjs
 ## Layout
 
 ```
-src/                     plugin source (capture.ps1, input.ps1, context.ps1, tools.js, overlay.*, index.js, …)
+src/                     plugin source (act.ps1 — the single executor — tools.js, overlay.*, index.js, …)
 skills/computer-use.md   the model-facing skill: the two modes, click discipline, coordinate rules
 client.js                web settings card
 tools/                   doctor (health check / self-heal) and install.mjs (put a checkout into a profile)

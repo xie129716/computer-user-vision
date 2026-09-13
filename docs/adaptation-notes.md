@@ -107,8 +107,12 @@ ky = (capture.height / stored.height) / capture.scale
 screen = virtual_offset + image_px * [kx, ky]
 ```
 
-`capture.scale` is the requested downscale inside `capture.ps1`; after a region crop `virtual_offset`
-is already the crop origin, so the same formula holds for region captures.
+The executor reports `screen_per_image` (exact screen pixels per image pixel, computed after any
+region crop and rounded resize) and `virtual_offset` is already the crop origin, so the same formula
+holds for region captures.
+
+> Superseded detail: this factor used to be derived from the *requested* `capture.scale`, which is
+> only approximately right once the bitmap size is rounded. `screen_per_image` is exact.
 
 ### Fallbacks
 

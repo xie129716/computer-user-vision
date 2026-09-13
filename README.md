@@ -109,6 +109,12 @@ cause, until the user re-approves with `/computer`. Only a deliberate user actio
 marker — an idle reap or a host shutdown leaves nothing behind, so the plugin can never mistake its
 own cleanup for a user stop.
 
+The banner is **two windows**, so it does not eat your clicks: the decoration (background, accent
+bar and both labels) is click-through, and the only part of the strip that consumes a click is the
+Stop button itself — 96x30 rather than the whole 620x46 banner. A click on the `Ctrl+Alt+Esc` hint
+goes to whatever is underneath, which is where it looks like it should go. `verify/overlay-hit.mjs`
+asserts exactly that, point by point.
+
 The chat-input switch tells the truth about that state: it treats a stop as outranking the mode, so
 after a button or hotkey stop it shows an amber **"stopped by you"** instead of the green "on" it
 used to show while every call was being refused. It re-reads the state every four seconds, so the
@@ -272,8 +278,8 @@ reader should be able to check line by line rather than discover:
 - **No telemetry and no outbound requests** from the plugin itself. The only network traffic is the
   screenshot your model provider already receives, described above.
 
-All of these are also asserted by `verify/` — `registration.mjs`, `overlay.mjs` and
-`plugin-exports.mjs` fail loudly if one of them stops being true.
+All of these are also asserted by `verify/` — `registration.mjs`, `overlay.mjs`, `overlay-hit.mjs`
+and `plugin-exports.mjs` fail loudly if one of them stops being true.
 
 ---
 

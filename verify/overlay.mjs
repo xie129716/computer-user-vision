@@ -28,15 +28,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /**
  * Count live overlay processes by command line.
  *
- * The query must exclude $PID: this helper's own `-Command` text contains the
- * string "overlay.ps1", so it matches its own filter and inflates every count
- * by one.
+ * The match must be the actual spawn shape (`-File ... overlay.ps1`) and must
+ * exclude $PID. Matching a bare `overlay.ps1` substring was worse than noisy: a
+ * `-Command` helper's own text contains the pattern, and so does any caller whose
+ * command happened to name the file - including the shell that launched this test,
+ * which then got killed mid-run and took the whole suite down with it.
  */
+const PS_OVERLAY_FILTER =
+  "Where-Object { $_.CommandLine -like '*-File*overlay.ps1*' -and $_.ProcessId -ne $PID }";
+
 function overlayProcesses() {
   const ps = spawnSync('powershell.exe', ['-NoProfile', '-Command',
     "(Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | " +
-    "Where-Object { $_.CommandLine -like '*overlay.ps1*' -and $_.ProcessId -ne $PID } | " +
-    'Measure-Object).Count',
+    `${PS_OVERLAY_FILTER} | Measure-Object).Count`,
   ], { encoding: 'utf8' });
   return Number((ps.stdout || '0').trim()) || 0;
 }
@@ -50,8 +54,7 @@ const check = (name, ok, detail) => {
 // Clean slate.
 try { spawnSync('powershell.exe', ['-NoProfile', '-Command',
   "Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | " +
-  "Where-Object { $_.CommandLine -like '*overlay.ps1*' -and $_.ProcessId -ne $PID } | " +
-  'ForEach-Object { Stop-Process -Id $_.ProcessId -Force }',
+  `${PS_OVERLAY_FILTER} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`,
 ], { encoding: 'utf8' }); } catch { /* nothing running */ }
 await sleep(600);
 

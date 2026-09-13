@@ -86,10 +86,11 @@ public class CUOverlayNative {
   public const int WS_EX_TOOLWINDOW = 0x00000080;
   public const int WS_EX_TRANSPARENT = 0x00000020;
   public const int WS_EX_LAYERED = 0x00080000;
+  public const int WS_EX_TOPMOST = 0x00000008;
   public const uint LWA_ALPHA = 0x2;
   public const uint LWA_COLORKEY = 0x1;
   public const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOZORDER = 0x4,
-                    SWP_NOACTIVATE = 0x10, SWP_FRAMECHANGED = 0x20;
+                    SWP_NOACTIVATE = 0x10, SWP_FRAMECHANGED = 0x20, SWP_NOOWNERZORDER = 0x200;
   public const int SW_HIDE = 0, SW_SHOWNOACTIVATE = 4;
 
   [StructLayout(LayoutKind.Sequential)] public struct POINT { public int x, y; }
@@ -97,9 +98,10 @@ public class CUOverlayNative {
   public struct CURSORINFO { public int cbSize; public int flags; public IntPtr hCursor; public POINT ptScreenPos; }
 
   /** Make a window decorative: never focused, never a click target when asked. */
-  public static void NoActivate(IntPtr h, bool clickThrough) {
+  public static void NoActivate(IntPtr h, bool clickThrough, bool layered) {
     int ex = GetWindowLong(h, GWL_EXSTYLE);
-    ex |= WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_LAYERED;
+    ex |= WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
+    if (layered) ex |= WS_EX_LAYERED;
     if (clickThrough) ex |= WS_EX_TRANSPARENT;
     SetWindowLong(h, GWL_EXSTYLE, ex);
     // WS_EX_LAYERED added to an EXISTING window only takes effect after a frame
@@ -112,6 +114,32 @@ public class CUOverlayNative {
   public static void SetKeyAlpha(IntPtr h, uint key, byte a) { SetLayeredWindowAttributes(h, key, a, LWA_ALPHA | LWA_COLORKEY); }
   public static void Hide(IntPtr h) { ShowWindow(h, SW_HIDE); }
   public static void ShowNoActivate(IntPtr h) { ShowWindow(h, SW_SHOWNOACTIVATE); }
+
+  /**
+   * Place a window at an exact size, bypassing Windows' minimum window size.
+   *
+   * A Form with FormBorderStyle=None is still a plain OVERLAPPED window - WinForms
+   * does not give it WS_POPUP - and DefWindowProc clamps an overlapped window to
+   * SM_CXMIN x SM_CYMIN. Measured on this machine: 136x39. The Stop button is
+   * 96x30, so the brake window came out 136x39: 28px of dead strip past the
+   * banner's right edge and 40px more height than the button it holds.
+   *
+   * The clamp is applied when the bounds are SET (WinForms' SetBounds goes through
+   * WM_WINDOWPOSCHANGING), not by SetWindowPos itself - verified by measuring a
+   * 96x30 window before and after this call. So this is the fix, and it needs the
+   * handle to exist already.
+   */
+  public static bool PlaceExactly(IntPtr h, int x, int y, int cx, int cy) {
+    return SetWindowPos(h, IntPtr.Zero, x, y, cx, cy, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+  }
+
+  /** True while the window still carries WS_EX_TOPMOST. */
+  public static bool IsTopMost(IntPtr h) { return (GetWindowLong(h, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0; }
+
+  /** Re-assert topmost z-order, touching nothing else. */
+  public static void ReassertTopMost(IntPtr h) {
+    SetWindowPos(h, new IntPtr(-1) /* HWND_TOPMOST */, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  }
 
   [DllImport("user32.dll")] public static extern IntPtr GetDC(IntPtr h);
   [DllImport("user32.dll")] public static extern int ReleaseDC(IntPtr h, IntPtr dc);
@@ -379,25 +407,41 @@ function New-HaloBitmap([System.Drawing.Color]$colour) {
   return $bmp
 }
 
-# --- the banner (the only interactive window) ------------------------------
-$banner = New-Object System.Windows.Forms.Form
-$banner.FormBorderStyle = 'None'
-$banner.ShowInTaskbar = $false
-$banner.StartPosition = 'Manual'
-$banner.TopMost = $true
-$banner.BackColor = [System.Drawing.Color]::FromArgb(24, 26, 33)
+# --- the banner: TWO windows, so only the brake can eat a click -------------
+# This used to be one 620x46 window, and that whole strip swallowed mouse input.
+# The obvious fix - WS_EX_TRANSPARENT on it - was tried and MEASURED to break the
+# Stop button: because the banner is WS_EX_LAYERED, hit-testing is done for the
+# WHOLE layer, so the style took the button's children with it and every probe
+# point inside the button rect returned the window underneath. The emergency brake
+# must not rest on a subtlety like that, so the banner is split instead:
+#
+#   * $deco   - background, accent bar and both labels. Click-through, layered,
+#               non-activating: the 620x46 strip now costs the user nothing.
+#   * $brake  - a window exactly the size of the Stop button (96x30) holding only
+#               that button. Deliberately NOT layered and NOT transparent, so it
+#               is the single place in the indicator that can consume a click.
+#
+# The two rects are adjacent and never overlap (the hint label ends at base 510,
+# the brake begins at base 512), so it still reads as one banner, and the area that
+# can swallow a click drops from 620x46 to 96x30.
+$bannerBack = [System.Drawing.Color]::FromArgb(24, 26, 33)
 $bannerWidth = [int][Math]::Round(620 * $uiScale)
 $bannerHeight = [int][Math]::Round(46 * $uiScale)
-$banner.SetBounds(
-  [int]($vs.X + ($vs.Width - $bannerWidth) / 2),
-  [int]($vs.Y + [Math]::Round(10 * $uiScale)),
-  $bannerWidth,
-  $bannerHeight)
+$bannerX = [int]($vs.X + ($vs.Width - $bannerWidth) / 2)
+$bannerY = [int]($vs.Y + [Math]::Round(10 * $uiScale))
+
+$deco = New-Object System.Windows.Forms.Form
+$deco.FormBorderStyle = 'None'
+$deco.ShowInTaskbar = $false
+$deco.StartPosition = 'Manual'
+$deco.TopMost = $true
+$deco.BackColor = $bannerBack
+$deco.SetBounds($bannerX, $bannerY, $bannerWidth, $bannerHeight)
 
 $accentBar = New-Object System.Windows.Forms.Panel
 $accentBar.SetBounds(0, 0, [int][Math]::Round(4 * $uiScale), $bannerHeight)
 $accentBar.BackColor = $colA
-$banner.Controls.Add($accentBar)
+$deco.Controls.Add($accentBar)
 
 $txt = New-Object System.Windows.Forms.Label
 $txt.AutoSize = $false
@@ -407,7 +451,7 @@ $txt.ForeColor = [System.Drawing.Color]::FromArgb(236, 240, 248)
 $txt.BackColor = [System.Drawing.Color]::Transparent
 $txt.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', [single](10.5 * $uiScale), [System.Drawing.FontStyle]::Regular)
 $txt.Text = $label
-$banner.Controls.Add($txt)
+$deco.Controls.Add($txt)
 
 $hintLabel = New-Object System.Windows.Forms.Label
 $hintLabel.AutoSize = $false
@@ -417,14 +461,22 @@ $hintLabel.ForeColor = [System.Drawing.Color]::FromArgb(150, 158, 176)
 $hintLabel.BackColor = [System.Drawing.Color]::Transparent
 $hintLabel.Font = New-Object System.Drawing.Font('Segoe UI', [single](8.5 * $uiScale), [System.Drawing.FontStyle]::Regular)
 $hintLabel.Text = $hint
-$banner.Controls.Add($hintLabel)
+$deco.Controls.Add($hintLabel)
+
+$brakeW = [int][Math]::Round(96 * $uiScale)
+$brakeH = [int][Math]::Round(30 * $uiScale)
+$brakeX = $bannerX + $bannerWidth - $brakeW - [int][Math]::Round(12 * $uiScale)
+$brakeY = $bannerY + [int][Math]::Round(8 * $uiScale)
+$brake = New-Object System.Windows.Forms.Form
+$brake.FormBorderStyle = 'None'
+$brake.ShowInTaskbar = $false
+$brake.StartPosition = 'Manual'
+$brake.TopMost = $true
+$brake.BackColor = $bannerBack
+$brake.SetBounds($brakeX, $brakeY, $brakeW, $brakeH)
 
 $cancel = New-Object System.Windows.Forms.Button
-$cancel.SetBounds(
-  [int][Math]::Round($bannerWidth - 108 * $uiScale),
-  [int][Math]::Round(8 * $uiScale),
-  [int][Math]::Round(96 * $uiScale),
-  [int][Math]::Round(30 * $uiScale))
+$cancel.SetBounds(0, 0, $brakeW, $brakeH)
 $cancel.FlatStyle = 'Flat'
 $cancel.FlatAppearance.BorderSize = 0
 $cancel.BackColor = [System.Drawing.Color]::FromArgb(64, 74, 102)
@@ -433,8 +485,9 @@ $cancel.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', [single](9.5
 $cancel.Text = if ($cfg.stopLabel) { [string]$cfg.stopLabel } else { "Stop" }
 $cancel.Cursor = [System.Windows.Forms.Cursors]::Hand
 $cancel.UseVisualStyleBackColor = $false
-$banner.Controls.Add($cancel)
-[void]$forms.Add($banner)
+$brake.Controls.Add($cancel)
+[void]$forms.Add($deco)
+[void]$forms.Add($brake)
 
 function Stop-Overlay([string]$reason) {
   if ($script:stopped) { return }
@@ -479,8 +532,9 @@ $script:haloY = 0
 $script:tick = 0
 $script:haloBmp = New-HaloBitmap $colA
 $script:haloHB = $script:haloBmp.GetHbitmap([System.Drawing.Color]::FromArgb(0, 0, 0, 0))
-$script:bannerForm = $banner
-$script:allForms = @($frame, $halo, $banner)
+$script:decoForm = $deco
+$script:brakeForm = $brake
+$script:allForms = @($frame, $halo, $deco, $brake)
 $script:hidden = $false
 $script:phase = 0.0
 
@@ -544,49 +598,89 @@ $timer.add_Tick({
     if ($stale -ne [IntPtr]::Zero) { [CUOverlayNative]::DeleteObject($stale) | Out-Null }
   }
 
-  if ($script:bannerForm -and $script:bannerForm.IsHandleCreated -and -not $script:hidden) {
-    $script:bannerForm.TopMost = $true
+  # Keep the indicator on top, but ONLY repair the z-order when it has actually
+  # been lost - never as a heartbeat.
+  #
+  # Re-asserting Form.TopMost every tick was measured to silently disable the Stop
+  # button. $deco overlaps the brake (the deco strip is 620x46; the button sits
+  # inside it), so bumping $deco to the top of the topmost band slid a window
+  # between the cursor and the button while the button was pressed. A message
+  # trace shows WM_LBUTTONDOWN and WM_LBUTTONUP both still arriving at the button,
+  # and the control's own state machine running ENTER -> DOWN -> UP, yet WinForms
+  # never raised Click: the press had been cancelled. The old single-window banner
+  # was immune only because the window it re-asserted was the button's own parent.
+  # Twenty SetWindowPos calls a second bought nothing and broke the brake.
+  if (-not $script:hidden) {
+    foreach ($bf in @($script:decoForm, $script:brakeForm)) {
+      if ($bf -and $bf.IsHandleCreated -and -not [CUOverlayNative]::IsTopMost($bf.Handle)) {
+        [CUOverlayNative]::ReassertTopMost($bf.Handle)
+      }
+    }
   }
 })
 
-$banner.add_Shown({
-  foreach ($pair in @(
-      @{ f = $script:frameForm; ct = $true },
-      @{ f = $script:haloForm; ct = $true }, @{ f = $script:bannerForm; ct = $false })) {
-    if ($pair.f -and $pair.f.IsHandleCreated) { [CUOverlayNative]::NoActivate($pair.f.Handle, $pair.ct) }
-  }
+$brake.add_Shown({
   # First commit with real per-pixel alpha. There is no colour key any more, so
-  # neither window needs SetLayeredWindowAttributes at all.
+  # neither window needs SetLayeredWindowAttributes for correctness - but a layered
+  # window that has never been given an alpha is not guaranteed to paint, and $deco
+  # is the one layered window here with no pushed bitmap behind it, so it gets an
+  # explicit full-alpha call. Its children (accent bar, both labels) then ride along
+  # as they always did.
   if ($script:frameForm.IsHandleCreated) {
     [CUOverlayNative]::PushHBitmap($script:frameForm.Handle, $script:frmHB, $script:frmW, $script:frmH, $script:frameX, $script:frameY, 140) | Out-Null
   }
   if ($script:haloForm.IsHandleCreated) {
     [CUOverlayNative]::PushHBitmap($script:haloForm.Handle, $script:haloHB, $script:haloSize, $script:haloSize, $script:haloX, $script:haloY, 220) | Out-Null
   }
-  [CUOverlayNative]::RegisterHotKey($script:bannerForm.Handle, 1, $hotkeyMods, $hotkeyVk) | Out-Null
+  # The hotkey is owned by the thread, but RegisterHotKey needs a window of that
+  # thread; the brake is the one window here that is guaranteed to live as long as
+  # the message loop, so it posts the WM_HOTKEY the filter is waiting for.
+  [CUOverlayNative]::RegisterHotKey($script:brakeForm.Handle, 1, $hotkeyMods, $hotkeyVk) | Out-Null
   $timer.Start()
 })
 
-# WinForms' Show() ACTIVATES the window, and at this point WS_EX_NOACTIVATE has
-# not been applied yet - that happens in the banner's Shown handler, because the
-# style can only be set once the handle exists. The frame is a full-screen
-# TOPMOST window, so the indicator used to seize the foreground the instant it
-# appeared: focus was stolen from whatever the user was typing in, and
-# computer_activate_window reported failure because its success check compares
-# the foreground window against the requested one and found the overlay instead.
-# Remember who had focus and hand it straight back.
+# WinForms' Show() ACTIVATES the window, and a window style can only be set once a
+# handle exists - so the old code showed first and styled in a Shown handler, which
+# meant the window had already taken the foreground by the time it was told not to.
+# The frame is a full-screen TOPMOST window, so the indicator used to seize the
+# foreground the instant it appeared: focus was stolen from whatever the user was
+# typing in, and computer_activate_window reported failure because its success check
+# compares the foreground window against the requested one and kept finding the
+# overlay instead.
+#
+# Force every handle into existence FIRST, apply the styles, and only then show
+# anything, so nothing is ever activated in the first place. The foreground is still
+# recorded and handed back as a belt-and-braces measure.
+#
+# Click-through: the frame, the halo and $deco. NOT click-through: $brake, which is
+# the single window in the indicator that is allowed to consume a mouse click.
 $previousForeground = [CUOverlayNative]::GetForegroundWindow()
-foreach ($f in @($frame, $halo)) { $f.Show() }
+foreach ($f in @($frame, $halo, $deco, $brake)) { $null = $f.Handle }
+[CUOverlayNative]::NoActivate($frame.Handle, $true, $true)
+[CUOverlayNative]::NoActivate($halo.Handle, $true, $true)
+[CUOverlayNative]::NoActivate($deco.Handle, $true, $true)
+[CUOverlayNative]::NoActivate($brake.Handle, $false, $false)
+# $deco is layered with no pushed bitmap, so it needs an explicit full alpha or it
+# may never be painted. Without this the banner text would vanish into a hole.
+[CUOverlayNative]::SetAlpha($deco.Handle, 255)
+
+foreach ($f in @($frame, $halo, $deco, $brake)) { $f.Show() }
+# Undo the OS minimum-window clamp. A Form with FormBorderStyle=None is still an
+# overlapped window, so Windows clamps it to SM_CXMIN x SM_CYMIN (136x39 here) -
+# which turned the 96x30 brake into a 136x39 strip that hung 28px past the banner.
+# The clamp is applied when bounds are set, so a direct SetWindowPos after the
+# window exists is what actually makes the brake the size of its button.
+[CUOverlayNative]::PlaceExactly($brake.Handle, $brakeX, $brakeY, $brakeW, $brakeH) | Out-Null
 if ($previousForeground -ne [IntPtr]::Zero) {
   [CUOverlayNative]::SetForegroundWindow($previousForeground) | Out-Null
 }
 $timer.Start()
 
 try {
-  [System.Windows.Forms.Application]::Run($banner)
+  [System.Windows.Forms.Application]::Run($brake)
 } finally {
   $timer.Stop()
-  try { [CUOverlayNative]::UnregisterHotKey($banner.Handle, 1) | Out-Null } catch { }
+  try { [CUOverlayNative]::UnregisterHotKey($brake.Handle, 1) | Out-Null } catch { }
   foreach ($f in $forms) { try { $f.Close(); $f.Dispose() } catch { } }
   [System.Windows.Forms.Application]::RemoveMessageFilter($hotkeyFilter)
   if (-not $script:stopped) { Stop-Overlay 'closed' }

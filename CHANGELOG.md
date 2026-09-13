@@ -1,5 +1,83 @@
 # Changelog
 
+## 0.3.26 (the banner stopped eating clicks — and the brake works again)
+
+Two bugs, both in the control indicator, both found by measuring instead of looking. The second one
+is the reason this release exists: the emergency brake had been silently dead.
+
+### The banner swallowed a 620x46 strip of the screen
+
+The banner is decoration plus one button, but it was a single window, so **every pixel of it consumed
+a mouse click**. A click on the `Ctrl+Alt+Esc` hint — which reads as a caption — reached nothing. The
+user hit this for real: a click near the top of the screen went nowhere.
+
+The obvious fix was tried first and **measured to break the brake**, so it was reverted rather than
+shipped: adding `WS_EX_TRANSPARENT` to the banner made all four probe points inside the Stop button
+return the window *underneath*. The cause is that a `WS_EX_LAYERED` window is hit-tested as a whole
+**layer**, so the style takes the children with it.
+
+The fix that works is structural — **one window becomes two**:
+
+| window | contents | click behaviour |
+| --- | --- | --- |
+| `deco` | background, accent bar, both labels | click-through (layered + transparent) |
+| `brake` | nothing but the Stop button, exactly 96x30 | **the only part that can take a click** |
+
+Measured with `WindowFromPoint`, which is the same question Windows asks when routing a click:
+
+| | banner strip points eaten | interactive area |
+| --- | --- | --- |
+| before | **10 / 10** | 620x46 = 28 520 px² |
+| after | **0 / 10** | 96x30 = 2 880 px² |
+
+Every non-button point now resolves to the window underneath. The brake stays where it was, at
+`[1162,18 .. 1258,48]`.
+
+### The Stop button had silently stopped working
+
+Splitting the banner broke the brake, and the symptom was not a missing click. A message-level trace
+showed `WM_LBUTTONDOWN` **and** `WM_LBUTTONUP` both arriving at the button, with the control's own
+state machine running `ENTER -> DOWN -> UP` — and no `Click`.
+
+The cause was one line in the 50 ms animation tick:
+
+```powershell
+foreach ($bf in @($script:decoForm, $script:brakeForm)) { $bf.TopMost = $true }
+```
+
+`deco` overlaps `brake` (the button sits inside the banner strip), so re-asserting the deco's z-order
+**every tick slid a window between the cursor and the button mid-press**, and WinForms cancelled the
+press. Twenty `SetWindowPos` calls a second bought nothing. The old single-window banner was immune
+only because the window it re-asserted was the button's own parent — which is exactly why this was a
+regression introduced by the split, and why it had to be found by bisection rather than by reading.
+
+Fixed by only repairing the z-order when it has actually been lost:
+
+```powershell
+if (-not [CUOverlayNative]::IsTopMost($bf.Handle)) { [CUOverlayNative]::ReassertTopMost($bf.Handle) }
+```
+
+### The 96x30 brake window came out 136x39
+
+Windows clamps a top-level window to `SM_CXMIN x SM_CYMIN` — measured here as **136x39** — because a
+Form with `FormBorderStyle='None'` is still a plain *overlapped* window, not `WS_POPUP`. WinForms'
+own `MinimumSize` was 0x0, so this is the OS, not the framework. The result was a brake 28 px wider
+than the banner and 40 px of dead strip.
+
+The clamp is applied when the bounds are **set**, not by `SetWindowPos` — verified by measuring one
+96x30 window before and after. So `PlaceExactly` (a direct `SetWindowPos`) after the handle exists is
+the fix.
+
+### New verifier: `verify/overlay-hit.mjs` (9 checks)
+
+The lifecycle test proves the indicator starts and stops; it cannot see either bug above. This one
+asks the routing question directly and **is the instrument that caught the reverted fix before it
+shipped**. It also fires one real synthetic click and requires the stop marker to say `button`.
+
+`verify/overlay.mjs` and `verify/overlay-hit.mjs` both had a process filter matching a bare
+`overlay.ps1` substring, which also matched the shell that launched them — killing the test runner
+mid-run. Both now match the real spawn shape, `-File ... overlay.ps1`.
+
 ## 0.3.25 (`purpose: "look"` — the cheap way to just see the screen)
 
 Prompted by measuring what a "read the screen" call actually costs across the tool boundary.

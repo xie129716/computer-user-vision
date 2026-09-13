@@ -174,6 +174,7 @@ export function createOverlayController({ getConfig, logger } = {}) {
     ensure,
     touch,
     shutdown,
+    isRunning,
     pauseForCapture,
     resumeAfterCapture,
     stopReason,

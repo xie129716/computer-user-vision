@@ -61,7 +61,16 @@ window.__ModuleLoader__.load({
       "details.__cu_advanced[open] > .__cu_advancedSummary::before{transform:rotate(45deg) translate(-1px,-1px)}" +
       ".__cu_advancedSummary:hover{color:var(--dsw-alias-label-primary)}" +
       ".__cu_advancedBody{display:flex;flex-direction:column;gap:12px;padding-top:12px}" +
-      ".__cu_unavailable{font-size:13px;line-height:20px;color:var(--dsw-alias-label-tertiary)}";
+      ".__cu_unavailable{font-size:13px;line-height:20px;color:var(--dsw-alias-label-tertiary)}" +
+      // Chat-input switch: sits with the composer, so keep it compact.
+      ".__cu_switch{display:inline-flex;align-items:center;gap:8px;height:28px;padding:0 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:transparent;font:inherit;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);cursor:pointer;white-space:nowrap}" +
+      ".__cu_switch:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}" +
+      ".__cu_switch:disabled{opacity:.45;cursor:default}" +
+      ".__cu_switchOn{color:var(--dsw-alias-label-primary)}" +
+      ".__cu_switchTrack{position:relative;width:30px;height:16px;border-radius:8px;background:var(--dsw-alias-border-l3);transition:background 160ms ease}" +
+      ".__cu_switchOn .__cu_switchTrack{background:var(--dsw-alias-state-success-primary)}" +
+      ".__cu_switchKnob{position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;transition:transform 160ms ease}" +
+      ".__cu_switchOn .__cu_switchKnob{transform:translateX(14px)}";
     var tagId = "computer-user/main.css";
     if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=\"" + tagId + "\"]") === null) {
       var tag = document.createElement("style");
@@ -117,6 +126,9 @@ window.__ModuleLoader__.load({
       outputGuard: "代码输出打回",
       outputGuardHint: "把工具调用/伪 XML 写成对话文本时打回并提示；同内容第二次放行。关闭则不拦截。",
       debug: "调试日志",
+      switchOn: "电脑操控：已开启",
+      switchOff: "电脑操控：已关闭",
+      switchHint: "开启后 AI 可以直接操作你的电脑（授权静默完成，等同于 /computer）；关闭会立即停止操控并禁止后续操作。",
       save: "保存",
       reset: "恢复默认",
       saved: "已保存",
@@ -161,6 +173,9 @@ window.__ModuleLoader__.load({
       outputGuard: "Reject code-as-text output",
       outputGuardHint: "Rejects tool-call/XML written as conversation text; the same text passes on second output. Off disables.",
       debug: "Debug logging",
+      switchOn: "Computer use: on",
+      switchOff: "Computer use: off",
+      switchHint: "On lets the AI drive your computer directly — approval is granted silently, exactly as /computer would. Off stops it immediately and blocks further control.",
       save: "Save",
       reset: "Reset",
       saved: "Saved",
@@ -386,8 +401,60 @@ window.__ModuleLoader__.load({
       return out;
     }
 
+    // ── chat-input switch: computer-use on/off ──────────────────────────────
+    // Lives in conversation.input.left so it sits with the composer, where a
+    // beginner already looks. Turning it on performs the /computer grant
+    // silently; it drives the run MODE rather than a per-session approval, so it
+    // needs no session id and covers every conversation at once.
+    var CONTROL_API = "/computer-user/control";
+    var T = function (key) { return key; };
+
+    function ControlSwitch() {
+      var [state, setState] = react.useState(null);
+      var [busy, setBusy] = react.useState(false);
+
+      react.useEffect(function () {
+        var alive = true;
+        fetch(CONTROL_API, { headers: { accept: "application/json" } })
+          .then(function (r) { return r.json(); })
+          .then(function (json) { if (alive) setState(json); })
+          .catch(function () { if (alive) setState({ enabled: false, unavailable: true }); });
+        return function () { alive = false; };
+      }, []);
+
+      var unavailable = !!(state && state.unavailable);
+      var enabled = !!(state && state.enabled);
+
+      function onToggle() {
+        if (busy || unavailable) return;
+        setBusy(true);
+        fetch(CONTROL_API, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ enabled: !enabled }),
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (json) { setState(json); setBusy(false); })
+          .catch(function () { setBusy(false); });
+      }
+
+      return h("button", {
+        type: "button",
+        className: "__cu_switch" + (enabled ? " __cu_switchOn" : ""),
+        onClick: onToggle,
+        disabled: busy || unavailable,
+        title: T("switchHint"),
+        "aria-pressed": enabled ? "true" : "false",
+        "aria-label": enabled ? T("switchOn") : T("switchOff"),
+      },
+        h("span", { className: "__cu_switchTrack" }, h("span", { className: "__cu_switchKnob" })),
+        h("span", null, enabled ? T("switchOn") : T("switchOff"))
+      );
+    }
+
     function apply(ctx) {
       var t = ctx.locale.bind(NS);
+      T = t;
       ctx.effect(function () { return ctx.locale.register(NS, { zh: zh, en: en }); }, "computer-user: dictionaries");
       var scope = ctx.settingsScope.bind({ namespace: NS });
       ctx.slots.inject("settings.section", function () {
@@ -400,6 +467,14 @@ window.__ModuleLoader__.load({
         }, function (props) {
           return h(Section, Object.assign({}, props, { scope: scope }));
         });
+      });
+      ctx.slots.inject("conversation.input.left", function () {
+        return ctx.slots.register({
+          name: "conversation.input.left",
+          id: "computer-user-switch",
+          order: 40,
+          locale: NS,
+        }, ControlSwitch);
       });
     }
 

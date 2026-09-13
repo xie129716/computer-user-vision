@@ -167,6 +167,78 @@ export function apply(ctx, config) {
     sourceGetter = () => ({ ...config, mode: config?.mode ?? 'manual' });
   }
 
+  // ── control switch route (the chat-input toggle) ──
+  // One on/off switch for beginners: flipping it on does what /computer does,
+  // silently. It maps to the run mode rather than to a per-session grant, so the
+  // client never needs to know which conversation is on screen.
+  try {
+    ctx.inject(['webServer'], (sctx) => {
+      const writeJson = (res, status, payload) => {
+        res.writeHead(status, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+        });
+        res.end(JSON.stringify(payload));
+      };
+      const isLoopback = (req) => {
+        const address = req.socket?.remoteAddress ?? '';
+        return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+      };
+      const snapshot = () => {
+        const cfg = getConfig() ?? {};
+        const mode = cfg.mode ?? 'manual';
+        return {
+          mode,
+          enabled: mode !== 'disabled',
+          actionable: mode === 'auto' || approvals.isProfileTrusted(),
+          profileTrusted: approvals.isProfileTrusted(),
+          approvalScope: cfg.approval_scope ?? 'session',
+          overlayRunning: overlay.isRunning(),
+          stopped: overlay.stopLabel(),
+        };
+      };
+
+      sctx.effect(() => sctx.webServer.register({
+        kind: 'exact',
+        path: '/computer-user/control',
+        handler: async (req, res) => {
+          if (!isLoopback(req)) { writeJson(res, 403, { error: 'loopback only' }); return; }
+          if (req.method === 'GET') { writeJson(res, 200, snapshot()); return; }
+          if (req.method !== 'POST') { writeJson(res, 405, { error: 'method not allowed' }); return; }
+
+          let raw = '';
+          await new Promise((resolve) => {
+            req.on('data', (chunk) => { raw += chunk; if (raw.length > 4096) req.destroy(); });
+            req.on('end', resolve);
+          });
+          let enabled = true;
+          try { enabled = JSON.parse(raw || '{}').enabled !== false; }
+          catch { writeJson(res, 400, { error: 'bad json' }); return; }
+
+          try {
+            if (enabled) {
+              // Exactly what /computer grants, minus the typing: a profile-wide
+              // approval plus a mode that needs no further approval.
+              approvals.setProfileTrusted(true);
+              overlay.clearStop();
+              await setMode('auto');
+            } else {
+              approvals.setProfileTrusted(false);
+              await setMode('disabled');
+              overlay.shutdown();
+            }
+          } catch (error) {
+            writeJson(res, 500, { error: String(error?.message ?? error) });
+            return;
+          }
+          writeJson(res, 200, { ok: true, ...snapshot() });
+        },
+      }), 'computer-user: control switch route');
+    });
+  } catch (error) {
+    ctx.logger?.warn?.(`[computer-user] control switch route unavailable: ${String(error?.message ?? error)}`);
+  }
+
   // ── /computer command for session approval ──
   try {
     ctx.inject(['commands'], (sctx) => {

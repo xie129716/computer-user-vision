@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.15 (a repeatable submission for the awesome list)
+
+- **`tools/open-awesome-pr.mjs`** prepares the `awesome-dsh-plugin` entry: it forks the list, then
+  builds one commit containing one added file through the Git Data API, so the enormous upstream
+  repository is never cloned. `--open` opens the PR as a draft. Re-running it is safe — the second
+  run moves the branch instead of failing on it. That matters because the list's CI refuses any
+  repository younger than one day, so the intended flow is to prepare now and open later.
+- **The fork-then-probe trap is documented in the script.** `GET /git/ref/{ref}` wants
+  `heads/<branch>`; passing `refs/heads/<branch>` 404s, which reads as "branch missing", so the
+  following create fails with 422 and a re-run stops being safe. Measured here, then removed
+  rather than worked around.
+
 ## 0.3.14 (the peer range actually admits the harness people run)
 
 `@deepseek-ai/dsh-settings` was declared as `>=0.1.0-rc.6`. That looks broad and is not: node-semver

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.14 (the peer range actually admits the harness people run)
+
+`@deepseek-ai/dsh-settings` was declared as `>=0.1.0-rc.6`. That looks broad and is not: node-semver
+only lets a prerelease satisfy a range when *some* comparator in it carries the same
+`major.minor.patch` tuple **and** a prerelease tag of its own. The harness shipping on this machine
+is `0.1.5-rc.2`, whose tuple is `0.1.5` — no comparator in that range has it, so the requirement was
+silently unsatisfiable and a fresh `dsh plugin add` would hand the user an `ERESOLVE` to work around
+by hand.
+
+Measured, not reasoned: `>=0.1.0-rc.6` → `0.1.0-rc.6` yes, **`0.1.5-rc.2` no**; the "match
+everything" `>=0.0.0-0 <0.2.0-0` → no; and even an explicit `>=0.1.0-rc.6 <0.2.0-0` → no. Only
+enumerating the prerelease tuples works:
+
+```jsonc
+">=0.1.0-rc.6 <0.1.5-0 || >=0.1.5-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0"
+```
+
+Verified across `0.1.0-rc.6` … `0.2.0` (prereleases included). The `dsh-plugin` topic is now set on
+the repository as well.
+
 ## 0.3.13 (the repository is the upgraded plugin, and nothing else)
 
 A download of this repository used to arrive as the upgraded plugin **plus** whatever the original

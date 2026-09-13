@@ -1,0 +1,19 @@
+# Keep the repo byte-stable across platforms.
+
+* text=auto
+
+# pnpm patches are line-ending sensitive: git-apply fails on CRLF, so never
+# let git normalize this file.
+*.patch -text
+
+# Windows scripts run through cmd.exe / Windows PowerShell.
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Plain source and docs.
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf

@@ -1,0 +1,186 @@
+# computer-user-vision
+
+An **unofficial fork** of [computer-user](https://github.com/jing-hy/computer-user) — Codex-style
+computer use for **DeepSeek Harness (DSH)** on Windows: read the screen, drive mouse & keyboard,
+close the *look → act → verify* loop.
+
+It exists because the upstream 0.3.6 release is **silently inert on any DSH ≥ 0.1.2**, and because
+it was written before the models could see.
+
+---
+
+## Why this fork
+
+### 1. Upstream does not load at all on current DSH
+
+`src/index.js` took a named import from a package that no longer exports it:
+
+```js
+import { settingsNamespace } from '@deepseek-ai/dsh-settings';
+```
+
+The 0.1.5 line of `dsh-settings` exports only
+`SettingsConflictError`, `SettingsProvider`, `default`, `redactSecrets`.
+A missing named export fails the **whole ES module at load time**, so on a current host you get:
+
+- none of the ten `computer_*` tools
+- no settings card
+- no `/computer` command
+
+…and **no error anywhere**. The plugin simply isn't there. Upstream's own peers
+(`^0.1.0-rc.6 || ^0.1.1-rc.2`) can never match a `0.1.5-rc.*` release, which is the drift this fork
+absorbs.
+
+### 2. It only knew how to be looked at through OCR
+
+`computer_screenshot` returned a PNG **path** and instructed the model to hand it to a local OCR
+plugin. That was the right design for text-only models. It is the wrong design for a model whose
+catalog entry says `inputModalities: ["text", "image"]` — such a model can simply look.
+
+---
+
+## What this fork changes
+
+| # | Change | File |
+|---|---|---|
+| 1 | Named import → namespace import + feature-detecting shim (works on both API generations) | `src/index.js` |
+| 2 | `SettingsScope.set(k, v)` → `SettingsScope.update({[k]: v})`, old path kept as fallback | `src/index.js` |
+| 3 | Screenshot committed through the host `attachments` service, returned as a real image block | `src/tools.js` |
+| 4 | Result carries `screen_per_pixel`, the authoritative image-pixel → screen-pixel factor | `src/tools.js` |
+| 5 | Vision mode re-captures smaller to fit `vision_max_pixels` instead of letting the host downscale opaquely | `src/tools.js` |
+| 6 | Four graceful fallbacks to the original path contract | `src/tools.js` |
+| 7 | New settings `vision_feedback` (default on) and `vision_max_pixels` (default 640000) | `src/config.js`, `client.js` |
+| 8 | Skill / README / settings-card copy rewritten around the two modes | `skills/`, `README*.md`, `client.js` |
+
+### The coordinate problem (the part that actually bites)
+
+The host tells a model the **preview dimensions** of an image but never how to get back to desktop
+coordinates. Worse, DeepSeek's **request-level** image budget is 640 000 pixels — not the 64 M
+attachment limit — so a 1920×1080 screenshot is silently downscaled before the model sees it. Any
+naive "click where I saw it" logic is then off by the downscale factor.
+
+This fork makes the mapping explicit and single-sourced:
+
+```
+screen_x = virtual_offset[0] + image_x * screen_per_pixel[0]
+screen_y = virtual_offset[1] + image_y * screen_per_pixel[1]
+```
+
+`screen_per_pixel` folds in the capture scale, the stored image size, **and** any normalization the
+attachment service applied on save. In vision mode the capture is also re-taken smaller to fit the
+budget, so the preview dimensions equal the file dimensions and the factor stays exact.
+
+For detail work — small UI text, small buttons — capture a `region` instead; the same pixel budget
+then covers far fewer pixels and the picture stays sharp.
+
+---
+
+## Install
+
+Requires **Windows**, **Node 22.19+ or 24+**, and a DSH profile (default `web`).
+
+```bash
+dsh plugin --profile web add git+https://github.com/xie129716/computer-user-vision.git
+```
+
+### Why this fork ships no patch file
+
+Patching a stock `computer-user@0.3.6` in place with `pnpm patch` works — that is how this fork was
+developed and validated on a live host — but the patch pnpm generates is **pnpm-specific**. Against
+a pristine 0.3.6 tarball it does not apply with `git apply`, neither on upstream's actual CRLF bytes
+nor on an LF-normalized copy. Shipping an artifact that looks portable but is not would be worse
+than shipping none, so install the fork instead.
+
+If you *do* keep a local pnpm patch, **pin the version exactly** (`"computer-user": "0.3.6"`, no
+caret). A patched-dependency key is version-exact, so a caret range resolving to a newer release
+silently drops the patch — taking both fixes with it.
+
+### Then
+
+Restart `dsh web` — bundle lists are composed at boot, so an already-running server will not pick
+the plugin up. The default mode is `manual`, which requires a per-session `/computer` approval
+before any side-effecting tool runs; `auto` lets the agent drive freely.
+
+---
+
+## The self-healing doctor
+
+`tools/computer-user-doctor.mjs` is a version-independent health check that **re-derives the
+defects from the installed source** instead of replaying a diff, so it keeps working across
+releases. It verifies that the patch is registered, the vision adaptation is present, the settings
+import is generation-agnostic, the write path uses the current API, and the module actually loads —
+and it **repairs** the two API-drift items automatically.
+
+```bash
+node tools/computer-user-doctor.mjs           # check, exit 1 when unhealthy
+node tools/computer-user-doctor.mjs --heal    # repair what is repairable
+```
+
+Installed into a profile as `scripts/`, it can run from a `postinstall` hook so any
+`dsh plugin add|update` self-checks. `tools/doctor.cmd` exists because pnpm's lifecycle shell does
+not reliably have `node` on `PATH` (nor sets `npm_node_execpath`); it searches, and always exits 0 —
+a health report must never fail an install.
+
+The vision adaptation itself is **not** auto-repairable: it is a ~300-line change across five files
+and cannot be derived from a future upstream release. The doctor reports it loudly, and the version
+pin keeps it in place.
+
+---
+
+## Verification
+
+```bash
+node verify/registration.mjs        # 15/15 — tools, settings namespace, /computer, update() write path
+node verify/vision-screenshot.mjs   # 16/16 — real capture, image block, budget fit, mapping, fallbacks
+node verify/doctor-heal.mjs         # VALIDATED — break the source, heal it, re-check
+node verify/plugin-exports.mjs      # audit every plugin in the profile for the same class of defect
+```
+
+Set `DSH_PROFILE` to target a non-default profile. `vision-screenshot.mjs` grabs the real screen
+(that is the point) but transmits it nowhere — the bytes go to a stubbed attachment service held in
+memory.
+
+Verified against **DSH 0.1.5-rc.1** on Windows 11, model route `deepseek-flash` (registered as
+*DeepSeek-V41-Flash*, `inputModalities: ["text","image"]`), single 1920×1080 display: a full capture
+becomes 1045×588 with `screen_per_pixel = 1.8367`, and the mapping reproduces the true screen size to
+under one pixel.
+
+---
+
+## Privacy — what does and does not leave the machine
+
+- **Screenshot capture and input injection are fully local** (PowerShell + Win32 `SendInput`).
+- **Vision mode necessarily sends the picture to your configured model provider.** That is what
+  using a vision model means, and it is the trade this fork makes. The frame is written to a local
+  temp file first; only that frame is attached, and nothing else is read.
+- **Path mode stays fully local** when paired with a local OCR plugin — only text tokens leave.
+- **The doctor and the verification scripts transmit nothing** and contain no telemetry.
+- Screenshots land in the OS temp directory (or `screenshot_dir`) and are **not deleted
+  automatically**. Clear them out if your screen showed anything sensitive.
+- Framing matters: capture a `region` around the target window instead of the whole desktop, so
+  unrelated windows never enter the model context.
+- Prefer the default `manual` mode over `auto` when you are not actively watching the run.
+
+---
+
+## Layout
+
+```
+src/                     plugin source (capture.ps1, input.ps1, tools.js, config.js, index.js, …)
+skills/computer-use.md   the model-facing skill: the two modes, click discipline, coordinate rules
+client.js                web settings card
+tools/                   computer-user-doctor.mjs + doctor.cmd (health check / self-heal)
+verify/                  the four verification scripts
+docs/                    adaptation notes + the preserved upstream README
+```
+
+---
+
+## Credits & license
+
+Original plugin, design and smoke tests: **[jing-hy](https://github.com/jing-hy/computer-user)** (MIT).
+The cross-generation settings bridge follows the pattern used by
+[dsh-imagegen](https://www.npmjs.com/package/@dickpy/dsh-imagegen).
+
+MIT — see [LICENSE](LICENSE). This fork is not affiliated with or endorsed by the upstream author;
+please report fork-specific problems here rather than upstream.

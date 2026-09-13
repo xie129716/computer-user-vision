@@ -1,0 +1,22 @@
+node_modules/
+.pnpm-store/
+*.log
+
+# local verification scratch space
+.verify-tmp/
+tests/_artifacts/
+*.verify-backup
+*.doctor-tmp
+
+# editor / OS noise
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# never commit real credentials or a real settings document
+settings.yaml
+.credentials.yaml
+*.secret
+.env

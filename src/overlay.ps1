@@ -67,6 +67,8 @@ using System;
 using System.Runtime.InteropServices;
 public class CUOverlayNative {
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr ctx);
+  [DllImport("user32.dll")] public static extern uint GetDpiForSystem();
   [DllImport("user32.dll", SetLastError = true)] public static extern bool RegisterHotKey(IntPtr h, int id, int mods, int vk);
   [DllImport("user32.dll", SetLastError = true)] public static extern bool UnregisterHotKey(IntPtr h, int id);
   [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int i);
@@ -124,7 +126,24 @@ public class CUOverlayNative {
 }
 '@
 Add-Type -TypeDefinition $native -ErrorAction Stop
-[CUOverlayNative]::SetProcessDPIAware() | Out-Null
+
+# Per-monitor DPI awareness v2 first. Plain SetProcessDPIAware() only makes the
+# process system-DPI aware, so on a mixed-DPI desk Windows bitmap-stretches the
+# overlay on secondary monitors and the frame stops landing on the real edges.
+# The context call only exists on newer Windows, so fall back rather than fail.
+$dpiOk = $false
+try { $dpiOk = [CUOverlayNative]::SetProcessDpiAwarenessContext([IntPtr](-4)) } catch { $dpiOk = $false }
+if (-not $dpiOk) { [CUOverlayNative]::SetProcessDPIAware() | Out-Null }
+
+# Everything below is authored at 100% and scaled here, so the same code reads the
+# same on a 1366x768 laptop, a plain 1920x1080 desktop and a 200%-scaled 4K panel.
+$systemDpi = 96
+try {
+  $probe = [int][CUOverlayNative]::GetDpiForSystem()
+  if ($probe -gt 0) { $systemDpi = $probe }
+} catch { $systemDpi = 96 }
+$uiScale = $systemDpi / 96.0
+$thickness = [Math]::Max(3, [int][Math]::Round($thickness * $uiScale))
 
 $filterSrc = @'
 using System;
@@ -147,33 +166,50 @@ $forms = New-Object System.Collections.ArrayList
 # Four strips that TILE the border without overlapping: the vertical strips are
 # inset by the thickness so each corner belongs to exactly one window. Overlap
 # would double-blend there and make the frame look crooked.
-function New-Strip([int]$x, [int]$y, [int]$w, [int]$h, [bool]$horizontal) {
+function New-Strip([int]$x, [int]$y, [int]$w, [int]$h, [bool]$horizontal, $from, $to) {
   $f = New-Object System.Windows.Forms.Form
   $f.FormBorderStyle = 'None'
   $f.ShowInTaskbar = $false
   $f.StartPosition = 'Manual'
   $f.TopMost = $true
   $f.SetBounds($x, $y, $w, $h)
+  # GetNewClosure() captures $from/$to/$horizontal per strip. Passing them through
+  # a script-scope variable instead made the FIRST strip paint before that
+  # variable was set, so its brush was built from null, the Paint handler threw,
+  # and that edge simply never appeared - which is exactly the asymmetry being
+  # reported.
   $f.add_Paint({
     param($sender, $e)
     $rc = $sender.ClientRectangle
     if ($rc.Width -le 0 -or $rc.Height -le 0) { return }
     $mode = if ($horizontal) { [System.Drawing.Drawing2D.LinearGradientMode]::Horizontal }
             else { [System.Drawing.Drawing2D.LinearGradientMode]::Vertical }
-    $brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rc, $script:colA, $script:colB, $mode)
+    $brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rc, $from, $to, $mode)
     try { $e.Graphics.FillRectangle($brush, $rc) } finally { $brush.Dispose() }
-  })
+  }.GetNewClosure())
   [void]$forms.Add($f)
   return $f
 }
 
-$top = New-Strip $vs.X $vs.Y $vs.Width $thickness $true
-$bottom = New-Strip $vs.X ($vs.Y + $vs.Height - $thickness) $vs.Width $thickness $true
-$left = New-Strip $vs.X ($vs.Y + $thickness) $thickness ($vs.Height - 2 * $thickness) $false
-$right = New-Strip ($vs.X + $vs.Width - $thickness) ($vs.Y + $thickness) $thickness ($vs.Height - 2 * $thickness) $false
+# The frame's colour flows around the perimeter instead of restarting on every
+# edge. With an independent A->B gradient per edge the corners disagree - the
+# top-left is blue/blue while the top-right is cyan/blue and the bottom-right is
+# cyan/cyan - and that reads as a crooked, asymmetric frame however level the
+# geometry actually is. Parameterising the perimeter diagonally makes every
+# corner agree: TL=A, TR=mid, BR=B, BL=mid.
+$colMid = [System.Drawing.Color]::FromArgb(
+  255,
+  [int](($colA.R + $colB.R) / 2),
+  [int](($colA.G + $colB.G) / 2),
+  [int](($colA.B + $colB.B) / 2))
+
+$top = New-Strip $vs.X $vs.Y $vs.Width $thickness $true $colA $colMid
+$bottom = New-Strip $vs.X ($vs.Y + $vs.Height - $thickness) $vs.Width $thickness $true $colMid $colB
+$left = New-Strip $vs.X ($vs.Y + $thickness) $thickness ($vs.Height - 2 * $thickness) $false $colA $colMid
+$right = New-Strip ($vs.X + $vs.Width - $thickness) ($vs.Y + $thickness) $thickness ($vs.Height - 2 * $thickness) $false $colMid $colB
 
 # --- the cursor halo -------------------------------------------------------
-$haloSize = 96
+$haloSize = [int][Math]::Max(48, [Math]::Round(96 * $uiScale))
 
 function New-DimColor([System.Drawing.Color]$c, [double]$dim) {
   return [System.Drawing.Color]::FromArgb(255, [int]($c.R * $dim), [int]($c.G * $dim), [int]($c.B * $dim))
@@ -278,7 +314,7 @@ $halo.add_Paint({
   # turned these rings pink. Keep every stroke fully opaque.
   $e.Graphics.SmoothingMode = 'None'
   $c = $script:haloColor
-  Draw-HaloShape $e.Graphics $script:cursorShape (New-DimColor $c 1.0) (New-DimColor $c 0.5) 1.0
+  Draw-HaloShape $e.Graphics $script:cursorShape (New-DimColor $c 1.0) (New-DimColor $c 0.5) $script:uiScale
 })
 [void]$forms.Add($halo)
 
@@ -289,46 +325,50 @@ $banner.ShowInTaskbar = $false
 $banner.StartPosition = 'Manual'
 $banner.TopMost = $true
 $banner.BackColor = [System.Drawing.Color]::FromArgb(24, 26, 33)
-$bannerWidth = 620
-$bannerHeight = 46
+$bannerWidth = [int][Math]::Round(620 * $uiScale)
+$bannerHeight = [int][Math]::Round(46 * $uiScale)
 $banner.SetBounds(
   [int]($vs.X + ($vs.Width - $bannerWidth) / 2),
-  [int]($vs.Y + 10),
+  [int]($vs.Y + [Math]::Round(10 * $uiScale)),
   $bannerWidth,
   $bannerHeight)
 
 $accentBar = New-Object System.Windows.Forms.Panel
-$accentBar.SetBounds(0, 0, 4, $bannerHeight)
+$accentBar.SetBounds(0, 0, [int][Math]::Round(4 * $uiScale), $bannerHeight)
 $accentBar.BackColor = $colA
 $banner.Controls.Add($accentBar)
 
 $txt = New-Object System.Windows.Forms.Label
 $txt.AutoSize = $false
 $txt.TextAlign = 'MiddleLeft'
-$txt.SetBounds(18, 0, 400, $bannerHeight)
+$txt.SetBounds([int][Math]::Round(18 * $uiScale), 0, [int][Math]::Round(370 * $uiScale), $bannerHeight)
 $txt.ForeColor = [System.Drawing.Color]::FromArgb(236, 240, 248)
 $txt.BackColor = [System.Drawing.Color]::Transparent
-$txt.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10.5, [System.Drawing.FontStyle]::Regular)
+$txt.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', [single](10.5 * $uiScale), [System.Drawing.FontStyle]::Regular)
 $txt.Text = $label
 $banner.Controls.Add($txt)
 
 $hintLabel = New-Object System.Windows.Forms.Label
 $hintLabel.AutoSize = $false
 $hintLabel.TextAlign = 'MiddleRight'
-$hintLabel.SetBounds(400, 0, 110, $bannerHeight)
+$hintLabel.SetBounds([int][Math]::Round(400 * $uiScale), 0, [int][Math]::Round(110 * $uiScale), $bannerHeight)
 $hintLabel.ForeColor = [System.Drawing.Color]::FromArgb(150, 158, 176)
 $hintLabel.BackColor = [System.Drawing.Color]::Transparent
-$hintLabel.Font = New-Object System.Drawing.Font('Segoe UI', 8.5, [System.Drawing.FontStyle]::Regular)
+$hintLabel.Font = New-Object System.Drawing.Font('Segoe UI', [single](8.5 * $uiScale), [System.Drawing.FontStyle]::Regular)
 $hintLabel.Text = $hint
 $banner.Controls.Add($hintLabel)
 
 $cancel = New-Object System.Windows.Forms.Button
-$cancel.SetBounds($bannerWidth - 108, 8, 96, 30)
+$cancel.SetBounds(
+  [int][Math]::Round($bannerWidth - 108 * $uiScale),
+  [int][Math]::Round(8 * $uiScale),
+  [int][Math]::Round(96 * $uiScale),
+  [int][Math]::Round(30 * $uiScale))
 $cancel.FlatStyle = 'Flat'
 $cancel.FlatAppearance.BorderSize = 0
 $cancel.BackColor = [System.Drawing.Color]::FromArgb(64, 74, 102)
 $cancel.ForeColor = [System.Drawing.Color]::FromArgb(240, 244, 252)
-$cancel.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 9.5, [System.Drawing.FontStyle]::Regular)
+$cancel.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', [single](9.5 * $uiScale), [System.Drawing.FontStyle]::Regular)
 $cancel.Text = if ($cfg.stopLabel) { [string]$cfg.stopLabel } else { "Stop" }
 $cancel.Cursor = [System.Windows.Forms.Cursors]::Hand
 $cancel.UseVisualStyleBackColor = $false
@@ -359,6 +399,7 @@ $hotkeyFilter.add_Fired({ Stop-Overlay 'hotkey' })
 
 $script:colA = $colA
 $script:colB = $colB
+$script:uiScale = $uiScale
 $script:haloColor = $colA
 $script:haloSize = $haloSize
 $script:cursorShape = 0

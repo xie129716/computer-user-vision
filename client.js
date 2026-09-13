@@ -129,6 +129,7 @@ window.__ModuleLoader__.load({
       switchOn: "电脑操控：已开启",
       switchOff: "电脑操控：已关闭",
       switchHint: "开启后 AI 可以直接操作你的电脑（授权静默完成，等同于 /computer）；关闭会立即停止操控并禁止后续操作。",
+      switchUnavailable: "电脑操控：服务未就绪",
       save: "保存",
       reset: "恢复默认",
       saved: "已保存",
@@ -176,6 +177,7 @@ window.__ModuleLoader__.load({
       switchOn: "Computer use: on",
       switchOff: "Computer use: off",
       switchHint: "On lets the AI drive your computer directly — approval is granted silently, exactly as /computer would. Off stops it immediately and blocks further control.",
+      switchUnavailable: "Computer use: service unavailable",
       save: "Save",
       reset: "Reset",
       saved: "Saved",
@@ -448,7 +450,7 @@ window.__ModuleLoader__.load({
         "aria-label": enabled ? T("switchOn") : T("switchOff"),
       },
         h("span", { className: "__cu_switchTrack" }, h("span", { className: "__cu_switchKnob" })),
-        h("span", null, enabled ? T("switchOn") : T("switchOff"))
+        h("span", null, unavailable ? T("switchUnavailable") : (enabled ? T("switchOn") : T("switchOff")))
       );
     }
 

@@ -27,6 +27,9 @@ import { runPs, powerShellScript } from './ps.js';
 import { createOutputGuard } from './output-guard.js';
 import { createOverlayController } from './overlay.js';
 import { createApprovalStore } from './approvals.js';
+import { mkdirSync, appendFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join as joinPath } from 'node:path';
 
 export const name = 'computer-user';
 export const version = '0.3.0';
@@ -167,12 +170,41 @@ export function apply(ctx, config) {
     sourceGetter = () => ({ ...config, mode: config?.mode ?? 'manual' });
   }
 
+  // A trace file rather than ctx.logger: logger is not guaranteed to exist here,
+  // so `ctx.logger?.warn?.()` fails SILENTLY - which is exactly how the first
+  // attempt at this route vanished without leaving a single line behind.
+  const routeTrace = (message) => {
+    try {
+      const dir = joinPath(tmpdir(), 'computer-user');
+      mkdirSync(dir, { recursive: true });
+      appendFileSync(joinPath(dir, 'route.log'), `${new Date().toISOString()} ${message}\n`, 'utf8');
+    } catch { /* diagnostics must never break the plugin */ }
+  };
+  routeTrace('route block entered');
+
   // ── control switch route (the chat-input toggle) ──
   // One on/off switch for beginners: flipping it on does what /computer does,
   // silently. It maps to the run mode rather than to a per-session grant, so the
   // client never needs to know which conversation is on screen.
+  //
+  // Reaching the server: dsh-imagegen calls `ctx.webServer` from inside an
+  // injected effect rather than injecting 'webServer' itself, so this mirrors
+  // that known-good pattern.
   try {
-    ctx.inject(['webServer'], (sctx) => {
+    ctx.inject(['settings'], (sctx) => {
+      routeTrace('injected callback fired');
+      // ctx.get() is the SAFE accessor. Plain property access on a cordis
+      // context THROWS for a service the plugin did not declare in `inject`,
+      // and an exception thrown inside this deferred callback is swallowed by
+      // the loader - which is why the previous attempt logged "callback fired"
+      // and then nothing at all, with no error anywhere.
+      let webServer;
+      try { webServer = ctx.get('webServer') ?? sctx.get('webServer'); }
+      catch (error) { routeTrace(`webServer lookup threw: ${String(error?.message ?? error)}`); }
+      if (!webServer || typeof webServer.register !== 'function') {
+        routeTrace(`route NOT registered: webServer unavailable (${typeof webServer})`);
+        return;
+      }
       const writeJson = (res, status, payload) => {
         res.writeHead(status, {
           'content-type': 'application/json; charset=utf-8',
@@ -198,45 +230,51 @@ export function apply(ctx, config) {
         };
       };
 
-      sctx.effect(() => sctx.webServer.register({
-        kind: 'exact',
-        path: '/computer-user/control',
-        handler: async (req, res) => {
-          if (!isLoopback(req)) { writeJson(res, 403, { error: 'loopback only' }); return; }
-          if (req.method === 'GET') { writeJson(res, 200, snapshot()); return; }
-          if (req.method !== 'POST') { writeJson(res, 405, { error: 'method not allowed' }); return; }
+      try {
+        sctx.effect(() => webServer.register({
+          kind: 'exact',
+          path: '/computer-user/control',
+          handler: async (req, res) => {
+            if (!isLoopback(req)) { writeJson(res, 403, { error: 'loopback only' }); return; }
+            if (req.method === 'GET') { writeJson(res, 200, snapshot()); return; }
+            if (req.method !== 'POST') { writeJson(res, 405, { error: 'method not allowed' }); return; }
 
-          let raw = '';
-          await new Promise((resolve) => {
-            req.on('data', (chunk) => { raw += chunk; if (raw.length > 4096) req.destroy(); });
-            req.on('end', resolve);
-          });
-          let enabled = true;
-          try { enabled = JSON.parse(raw || '{}').enabled !== false; }
-          catch { writeJson(res, 400, { error: 'bad json' }); return; }
+            let raw = '';
+            await new Promise((resolve) => {
+              req.on('data', (chunk) => { raw += chunk; if (raw.length > 4096) req.destroy(); });
+              req.on('end', resolve);
+            });
+            let enabled = true;
+            try { enabled = JSON.parse(raw || '{}').enabled !== false; }
+            catch { writeJson(res, 400, { error: 'bad json' }); return; }
 
-          try {
-            if (enabled) {
-              // Exactly what /computer grants, minus the typing: a profile-wide
-              // approval plus a mode that needs no further approval.
-              approvals.setProfileTrusted(true);
-              overlay.clearStop();
-              await setMode('auto');
-            } else {
-              approvals.setProfileTrusted(false);
-              await setMode('disabled');
-              overlay.shutdown();
+            try {
+              if (enabled) {
+                // Exactly what /computer grants, minus the typing: a profile-wide
+                // approval, no stop in force, and a mode needing no approval.
+                approvals.setProfileTrusted(true);
+                overlay.clearStop();
+                await setMode('auto');
+              } else {
+                approvals.setProfileTrusted(false);
+                await setMode('disabled');
+                overlay.shutdown();
+              }
+            } catch (error) {
+              routeTrace(`toggle failed: ${String(error?.message ?? error)}`);
+              writeJson(res, 500, { error: String(error?.message ?? error) });
+              return;
             }
-          } catch (error) {
-            writeJson(res, 500, { error: String(error?.message ?? error) });
-            return;
-          }
-          writeJson(res, 200, { ok: true, ...snapshot() });
-        },
-      }), 'computer-user: control switch route');
+            writeJson(res, 200, { ok: true, ...snapshot() });
+          },
+        }), 'computer-user: control switch route');
+        routeTrace('route registered at /computer-user/control');
+      } catch (error) {
+        routeTrace(`route registration THREW: ${String(error?.message ?? error)}`);
+      }
     });
   } catch (error) {
-    ctx.logger?.warn?.(`[computer-user] control switch route unavailable: ${String(error?.message ?? error)}`);
+    routeTrace(`inject threw: ${String(error?.message ?? error)}`);
   }
 
   // ── /computer command for session approval ──

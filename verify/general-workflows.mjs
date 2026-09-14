@@ -199,9 +199,19 @@ if (npWin) {
 // APP's pid (the CoreWindow), not ApplicationFrameHost's - that process hosts
 // several frames at once (measured: 计算器 and 设置 both belong to it), so handing
 // it that pid is genuinely ambiguous and picking one of them is not a bug.
-const calcProc = spawn('calc.exe', [], { detached: true, stdio: 'ignore' });
-calcProc.unref();
-const calcWin = await waitForWindow((w) => /计算器|Calculator/i.test(w.title));
+// Reuse a Calculator that is already up. Spawning `calc.exe` when the app is already
+// running makes it open ANOTHER window; across a few dozen suite runs that filled the
+// desktop with 38 identical "计算器" windows - the test littering the machine it is
+// supposed to be testing. Only launch one when there is none, and close it again at
+// the end so the suite leaves the desktop as it found it.
+let calcWin = ((await call('computer_list_windows', {})).windows ?? [])
+  .find((w) => /计算器|Calculator/i.test(w.title) && w.width > 200) ?? null;
+const startedCalc = !calcWin;
+if (startedCalc) {
+  const calcProc = spawn('calc.exe', [], { detached: true, stdio: 'ignore' });
+  calcProc.unref();
+  calcWin = await waitForWindow((w) => /计算器|Calculator/i.test(w.title));
+}
 let calcPid = null;
 if (calcWin) {
   const all = (await call('computer_list_windows', {})).windows ?? [];
@@ -410,6 +420,12 @@ check('D3 an unknown ref is refused with an actionable message',
 
 // ── cleanup ────────────────────────────────────────────────────────────────
 ps(`$t=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${Buffer.from(savedClip, 'utf8').toString('base64')}')); Set-Clipboard -Value $t`);
+// Only shut down the Calculator if this run launched it: killing the app closes
+// every one of its windows, and one the user had open is not ours to close.
+if (startedCalc) {
+  spawnSync('powershell.exe', ['-NoProfile', '-Command',
+    "Get-Process Calculator -ErrorAction SilentlyContinue | Stop-Process -Force"], { stdio: 'ignore' });
+}
 for (const w of (await call('computer_list_windows', {})).windows ?? []) {
   if (/notepad|记事本/i.test(w.class + w.title)) spawnSync('taskkill', ['/PID', String(w.pid), '/F'], { stdio: 'ignore' });
 }

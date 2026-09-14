@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.32 (the suite was littering the desktop it tests)
+
+No plugin code changed. `verify/general-workflows.mjs` spawned `calc.exe` on every run, and when the
+Calculator is already running, launching `calc.exe` opens **another window** instead of reusing the
+app. Measured after a session of runs: **one** `Calculator` process and **38** top-level windows
+titled 计算器 — a test that litters the machine it is supposed to be testing is a bad neighbour, and
+it also makes `computer_list_windows` noisy for whoever runs it next.
+
+It now reuses a Calculator that is already up, and shuts down the one it launched when it is done —
+only that one, since closing the app takes every window of it with it and one the user had open is
+not ours to close. Verified: two consecutive runs leave **0 windows and 0 processes** behind.
+
 ## 0.3.31 (using the new feature found two things the tests could not)
 
 Both came from driving the plugin through a restarted live session rather than through the verifier —

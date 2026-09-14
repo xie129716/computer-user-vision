@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.3.29 (snapshot-scoped element refs — and the first rule was too strict)
+
+- **Every enumeration now returns a `snapshot` id** (`s7`), and refs are stored per
+  snapshot instead of in a rolling pile where a name could quietly change meaning.
+  Retention is 3 enumerations, which keeps `screenshot -> computer_elements -> click`
+  working and nothing older.
+
+- **`computer_click` and `computer_type` take an optional `snapshot:` to pin.** A pinned
+  ref resolves inside exactly that enumeration, and a pin to an evicted snapshot is
+  **refused as stale** rather than silently re-pointed:
+
+  > 快照 s999999 已过期（只保留最近 3 次枚举：s2, s1）。引用只在产生它的那次枚举内有效，请重新
+  > computer_screenshot / computer_elements 后再操作。
+
+- **A bare ref follows the newest enumeration that contains it**, which is the list the
+  caller just read. The result now reports `ref_snapshot` — which enumeration it came
+  from — and `ref_ambiguous` when an older live snapshot disagreed about that name:
+
+  > 引用 e1 在更早的快照里指向不同控件（s3 -> "计算器"）；本次按最新快照 s4 解析。若你本意是更早
+  > 那次，请带上 snapshot 明确指定。
+
+- **`purpose: "look"` creates no snapshot**, because it enumerates nothing. A look
+  capture must not shadow refs the caller is already holding, and it does not.
+
+- **The first implementation of this refused.** It rejected any bare ref that two live
+  snapshots disagreed about, and `verify/element-refs.mjs --click` broke on its very
+  first integration run: that test enumerates the focused window, launches its own
+  Notepad, enumerates that, then clicks `e1` — unambiguously meaning the Notepad it just
+  enumerated — and the refusal rejected a correct call. So a contest became a **report**
+  rather than a refusal, and refusing is reserved for what genuinely cannot be honoured:
+  an unknown ref, or a pin to an evicted snapshot. Recorded because the strict version
+  looked obviously right until it was run.
+
+- **New `verify/ref-snapshots.mjs` (12 checks)** proves all of the above against the live
+  desktop, including that pinning an *older* snapshot resolves to that enumeration
+  rather than the newest.
+
+**This is a stability change, not a speed change.** It costs one `resolveRef` per call —
+no measurable latency — and it does not touch the real bottlenecks (process spawn,
+UI Automation enumeration, capture). What it buys is that a ref can no longer silently
+mean a different control, and that a caller can say which enumeration it meant.
+
 ## 0.3.28 (0.3.27 over-fitted to the one window it was found on)
 
 - **0.3.27 refused to enumerate any window whose root element reports no rectangle. That was an

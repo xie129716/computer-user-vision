@@ -38,18 +38,58 @@ const HEAD =
   '只有在元素列表里找不到目标时才退回 coordinate。单击后台窗口的第一下会被系统吃掉（只用于激活），需要时先用 computer_activate_window 聚焦。';
 
 /**
- * Element references from the most recent enumerations, newest first.
+ * Element references are SNAPSHOT-scoped.
  *
- * A ref such as `e12` only means something together with the enumeration that
- * produced it, and the caller may click it several steps later. Keeping the last
- * couple of generations lets a ref from the previous screenshot still resolve,
- * while act.ps1 re-looks-up the live element by automation id / name / type so
- * the click stays correct even if the window has moved since.
+ * A ref such as `e12` only means anything together with the enumeration that
+ * produced it, and the caller may click it several steps later. Two failures are
+ * possible, and only one of them used to be caught:
+ *
+ *   - the ref is gone entirely              -> already refused ("不认识");
+ *   - the SAME ref name now names a DIFFERENT control, because the window
+ *     re-rendered between the screenshot the caller read and the click. The old
+ *     lookup walked generations newest-first and returned the first hit, so this
+ *     silently clicked the wrong control - the worst possible outcome, because the
+ *     tool still reported success.
+ *
+ * Every enumeration therefore gets an id (`s7`), refs are stored per snapshot, and
+ * a bare ref that resolves to two different controls across live snapshots is
+ * REFUSED rather than guessed. Pinning the id (`snapshot: "s7"`) makes the intent
+ * explicit, and a pinned snapshot that has been evicted is refused as stale.
+ *
+ * Two different refs are the "same control" when their identity matches, and the
+ * identity deliberately excludes the rectangle: act.ps1 re-resolves the live
+ * element by automation id / name / type at click time, so a control that merely
+ * moved (or a window that was dragged) is still the right control. Only a control
+ * that is genuinely a different one is treated as a conflict.
+ *
+ * Retention is small on purpose: `screenshot -> computer_elements -> click` has to
+ * keep working, and nothing older than that is worth trusting.
  */
-const REF_GENERATIONS = 2;
-const refGenerations = [];
+const REF_SNAPSHOTS = 3;
+const refSnapshots = [];
+let refSnapshotSeq = 0;
 
-/** Remember one enumeration so its refs can be clicked later. */
+/** A control's identity, independent of where it currently sits on screen. */
+function refIdentity(el) {
+  const id = String(el.automationId ?? '').trim();
+  if (id) return `id:${id}`;
+  return `nm:${el.type ?? ''}|${el.name ?? ''}`;
+}
+
+/** A short human label for a control, for refusal messages. */
+function refLabel(el) {
+  const id = String(el.automationId ?? '').trim();
+  if (el.name) return `"${el.name}"`;
+  if (id) return id;
+  return el.type || 'unnamed';
+}
+
+/**
+ * Remember one enumeration so its refs can be clicked later.
+ * Returns the snapshot id and how many refs it holds, or null when there is
+ * nothing addressable (a `purpose: "look"` capture enumerates nothing, and must
+ * not create a snapshot that would shadow the refs the caller already has).
+ */
 function rememberElements(hwnd, title, elements) {
   const map = new Map();
   for (const el of elements ?? []) {
@@ -67,31 +107,100 @@ function rememberElements(hwnd, title, elements) {
       windowTitle: typeof title === 'string' ? title : '',
     });
   }
-  if (map.size === 0) return 0;
-  refGenerations.unshift({ at: Date.now(), hwnd: Number(hwnd) || 0, title: title ?? '', map });
-  while (refGenerations.length > REF_GENERATIONS) refGenerations.pop();
-  return map.size;
+  if (map.size === 0) return null;
+  refSnapshotSeq += 1;
+  const snapshot = `s${refSnapshotSeq}`;
+  refSnapshots.unshift({ snapshot, at: Date.now(), hwnd: Number(hwnd) || 0, title: title ?? '', map });
+  while (refSnapshots.length > REF_SNAPSHOTS) refSnapshots.pop();
+  return { snapshot, count: map.size };
 }
 
-/** Resolve a ref (with or without the leading @) to the element it named. */
-function lookupRef(ref) {
+/** The ids of the snapshots still addressable, newest first. */
+function liveSnapshots() {
+  return refSnapshots.map((s) => s.snapshot);
+}
+
+/**
+ * Resolve a ref, optionally pinned to one snapshot.
+ *
+ * A PINNED ref is strict: it only ever resolves inside the snapshot named, and a
+ * snapshot that has been evicted is refused as stale rather than re-pointed. That
+ * is the element-token property - explicit, checkable, no silent drift.
+ *
+ * A BARE ref is convenience, and it resolves against the NEWEST live snapshot that
+ * contains it, because that is the list the caller just looked at.
+ *
+ * The first version of this REFUSED a bare ref whenever two live snapshots
+ * disagreed about what it named. That was measured wrong on its first integration
+ * run: `verify/element-refs.mjs --click` enumerates the focused window, then
+ * launches its own Notepad and enumerates that, then clicks `e1` - unambiguously
+ * meaning the Notepad it just enumerated - and the refusal broke a correct call.
+ * So a contest is now REPORTED (`contested`) instead of refused: the caller learns
+ * which snapshot was used and that an older one disagreed, instead of silently
+ * getting one of them. Refusing is reserved for the cases where the caller's intent
+ * really cannot be honoured: an unknown ref, or a pin to an evicted snapshot.
+ *
+ * Returns `{ status }` of 'ok' | 'unknown' | 'stale-snapshot'.
+ */
+function resolveRef(ref, snapshotId) {
   const key = String(ref ?? '').trim().replace(/^@/, '');
-  if (!key) return null;
-  for (const gen of refGenerations) {
-    const hit = gen.map.get(key);
-    if (hit) return hit;
+  if (!key) return { status: 'unknown' };
+
+  if (snapshotId !== undefined && snapshotId !== null && String(snapshotId).trim() !== '') {
+    const want = String(snapshotId).trim().replace(/^@/, '');
+    const snap = refSnapshots.find((s) => s.snapshot === want);
+    if (!snap) return { status: 'stale-snapshot', snapshot: want, live: liveSnapshots() };
+    const hit = snap.map.get(key);
+    if (!hit) return { status: 'unknown', snapshot: want };
+    return { status: 'ok', hit, snapshot: want };
   }
-  return null;
+
+  const found = [];
+  for (const snap of refSnapshots) {
+    const hit = snap.map.get(key);
+    if (hit) found.push({ snap, hit });
+  }
+  if (found.length === 0) return { status: 'unknown' };
+  const chosen = found[0];
+  const contested = found.slice(1)
+    .filter((f) => refIdentity(f.hit) !== refIdentity(chosen.hit))
+    .map((f) => ({ snapshot: f.snap.snapshot, hit: f.hit }));
+  return { status: 'ok', hit: chosen.hit, snapshot: chosen.snap.snapshot, contested };
 }
 
 /** The head of the current addressable list, for "no such ref" messages. */
 function refInventory(limit = 12) {
   const out = [];
-  for (const [, el] of (refGenerations[0]?.map ?? new Map())) {
+  for (const [, el] of (refSnapshots[0]?.map ?? new Map())) {
     out.push(`${el.ref}${el.name ? ` "${el.name}"` : ''}`);
     if (out.length >= limit) break;
   }
   return out;
+}
+
+/** Turn a failed resolveRef into an actionable refusal, naming the snapshots. */
+function refRefusal(tool, ref, r) {
+  const live = liveSnapshots();
+  if (r.status === 'stale-snapshot') {
+    return `${tool}: 快照 ${r.snapshot} 已过期（只保留最近 ${REF_SNAPSHOTS} 次枚举：${r.live.join(', ') || '（无）'}）。` +
+      `引用只在产生它的那次枚举内有效，请重新 computer_screenshot / computer_elements 后再操作。`;
+  }
+  return `${tool}: 引用 ${ref} 不认识（可能来自更早的截图）。` +
+    `请先重新 computer_screenshot，或改用 name/coordinate。当前快照 ${live[0] ?? '（无）'} 可用：${refInventory().join(', ') || '（空）'}`;
+}
+
+/**
+ * A one-line note when an older live snapshot disagreed about a bare ref.
+ *
+ * The tool still does what the caller meant - it used the newest enumeration - but
+ * it says so, because "the same name meant something else a moment ago" is exactly
+ * the situation where a silent click goes wrong without anyone noticing.
+ */
+function refContestNote(ref, r) {
+  if (!r?.contested?.length) return null;
+  const parts = r.contested.map((c) => `${c.snapshot} -> ${refLabel(c.hit)}`);
+  return `引用 ${ref} 在更早的快照里指向不同控件（${parts.join(' ; ')}）；本次按最新快照 ${r.snapshot} 解析。`
+    + '若你本意是更早那次，请带上 snapshot 明确指定。';
 }
 
 /**
@@ -499,7 +608,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
 
       const elements = Array.isArray(res.elements) ? res.elements : [];
       const foreground = res.window ?? null;
-      rememberElements(foreground?.hwnd ?? 0, foreground?.title ?? '', elements);
+      const refSnapshot = rememberElements(foreground?.hwnd ?? 0, foreground?.title ?? '', elements);
 
       const base = {
         path: res.path,
@@ -514,6 +623,11 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         // derived from the requested scale, which is only approximately right.
         screen_per_image: Array.isArray(res.screen_per_image) ? res.screen_per_image : [1, 1],
         element_count: elements.length,
+        // Which snapshot these refs belong to. Pass it back as `snapshot` to pin a
+        // ref to this enumeration; a ref used without it is refused if it now names
+        // a different control. Absent for a `purpose: "look"` capture, which
+        // enumerates nothing and therefore must not shadow the refs already held.
+        ...(refSnapshot ? { snapshot: refSnapshot.snapshot } : {}),
         elements_skipped: maxElements === 0,
         purpose: lookMode ? 'look' : 'inspect',
         labeled: Number(res.labeled) || 0,
@@ -622,11 +736,12 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
       payload.include_static = args?.include_static === true;
       const res = await runPs('act.ps1', payload, { signal: exec?.signal });
       const elements = Array.isArray(res.elements) ? res.elements : [];
-      rememberElements(res.window?.hwnd ?? payload.hwnd ?? 0, res.window?.title ?? '', elements);
+      const refSnapshot = rememberElements(res.window?.hwnd ?? payload.hwnd ?? 0, res.window?.title ?? '', elements);
       return {
         count: elements.length,
         available: res.available !== false,
         ...(res.available === false ? { reason: res.reason } : {}),
+        ...(refSnapshot ? { snapshot: refSnapshot.snapshot } : {}),
         ...(res.window ? { window: res.window } : {}),
         scanned: Number(res.scanned) || 0,
         ms: Number(res.ms) || 0,
@@ -645,7 +760,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
       'Click a control. Give ONE of: ref (an element ref such as "e12" from computer_screenshot / computer_elements), name (the control\'s visible text, matched exactly first then as a substring), or coordinate.',
       'ref and name are resolved against the live UI Automation tree at click time, so the click follows the control if the window moved since the screenshot. Prefer them over coordinate.',
       `${HEAD}`,
-      'Parameters: ref, name, coordinate ([x,y] virtual-screen pixels), action (click [default] | right_click | double_click | middle_click), press_ms (how long the button stays down, default 50; raise it for a long press), expect_window (refuse unless the focused window title contains this), no_invoke (force a real mouse click instead of the control\'s UI Automation action).',
+      'Parameters: ref, snapshot (optional: the enumeration id the ref came from — a bare ref follows the newest enumeration containing it and says so, a pinned one is strict), name, coordinate ([x,y] virtual-screen pixels), action (click [default] | right_click | double_click | middle_click), press_ms (how long the button stays down, default 50; raise it for a long press), expect_window (refuse unless the focused window title contains this), no_invoke (force a real mouse click instead of the control\'s UI Automation action).',
       'Returns the point actually clicked, how it was performed (invoke/toggle/select/expand = the control was activated directly, mouse = synthetic click at its centre), the target rectangle, what sits under the click afterwards, and whether the click only raised the window.',
     ].join(' '),
     parameters: {
@@ -653,6 +768,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
       additionalProperties: true,
       properties: {
         ref: { type: 'string', description: 'Element ref from computer_screenshot / computer_elements, e.g. "e12" or "@e12".' },
+        snapshot: { type: 'string', description: 'Optional snapshot id (e.g. "s7") that the ref came from, as returned alongside the element list. A bare ref resolves against the NEWEST enumeration that contains it — the list you just looked at — and the result reports ref_snapshot plus ref_ambiguous if an older live snapshot disagreed about that name. Pin this to force one specific enumeration; a pin to an evicted snapshot is refused as stale instead of being silently re-pointed.' },
         name: { type: 'string', description: 'Accessible name / visible text of the control in the focused window.' },
         coordinate: { ...COORD, description: 'Fallback: [x, y] relative to virtual-screen origin. Prefer ref or name.' },
         action: { type: 'string', enum: ['click', 'right_click', 'double_click', 'middle_click'], description: 'Default click.' },
@@ -680,15 +796,13 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
 
       const refArg = typeof args?.ref === 'string' ? args.ref.trim() : '';
       const nameArg = typeof args?.name === 'string' ? args.name.trim() : '';
+      let refInfo = null;
 
       if (refArg) {
-        const hit = lookupRef(refArg);
-        if (!hit) {
-          throw new Error(
-            `computer_click: 引用 ${refArg} 不认识（可能来自更早的截图）。` +
-            `请先重新 computer_screenshot，或改用 name/coordinate。当前可用：${refInventory().join(', ') || '（空）'}`
-          );
-        }
+        const resolved = resolveRef(refArg, args?.snapshot);
+        if (resolved.status !== 'ok') throw new Error(refRefusal('computer_click', refArg, resolved));
+        const hit = resolved.hit;
+        refInfo = { ref: refArg, snapshot: resolved.snapshot, contested: resolved.contested ?? null };
         payload.target = {
           hwnd: hit.hwnd,
           name: hit.name,
@@ -731,6 +845,13 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
       }
 
       const out = { clicked: `[${(res.clicked ?? []).join(',')}]` };
+      // Say which enumeration a ref came from, and flag it when an older live
+      // snapshot disagreed about what that name meant.
+      if (refInfo) {
+        out.ref_snapshot = refInfo.snapshot;
+        const contest = refContestNote(refInfo.ref, refInfo);
+        if (contest) out.ref_ambiguous = contest;
+      }
       out.method = res.method;
       // Report the press duration that was actually used, so a caller can confirm a
       // long press really was long instead of assuming it.
@@ -774,7 +895,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
       'Type arbitrary UTF-16 text (supports Chinese) at the current focus.',
       'Give ref or name to focus a specific field first (done through UI Automation, so it works even if the field is partly covered); otherwise the text goes wherever the keyboard focus already is.',
       `${HEAD}`,
-      'Parameters: text (required string), send_enter (optional — press Enter after typing), ref / name (optional field to focus first), expect_window (optional — refuse unless the foreground window title contains it).',
+      'Parameters: text (required string), send_enter (optional — press Enter after typing), ref / snapshot / name (optional field to focus first; snapshot pins the ref to the enumeration it came from), expect_window (optional — refuse unless the foreground window title contains it).',
       'Input uses SendInput KEYEVENTF_UNICODE, so any character, including CJK, is entered reliably.',
     ].join(' '),
     parameters: {
@@ -783,6 +904,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         text: { type: 'string' },
         send_enter: { type: 'boolean' },
         ref: { type: 'string', description: 'Element ref of the field to focus first, e.g. "e7".' },
+        snapshot: { type: 'string', description: 'Optional snapshot id (e.g. "s7") that the ref came from. A bare ref resolves against the newest enumeration containing it; pin this to force one specific enumeration. A pin to an evicted snapshot is refused as stale.' },
         name: { type: 'string', description: 'Accessible name of the field to focus first.' },
         expect_window: EXPECT_WINDOW,
       },
@@ -801,9 +923,12 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         expectWindow: args?.expect_window,
       };
       const refArg = typeof args?.ref === 'string' ? args.ref.trim() : '';
+      let refInfo = null;
       if (refArg) {
-        const hit = lookupRef(refArg);
-        if (!hit) throw new Error(`computer_type: 引用 ${refArg} 不认识，请先重新 computer_screenshot / computer_elements`);
+        const resolved = resolveRef(refArg, args?.snapshot);
+        if (resolved.status !== 'ok') throw new Error(refRefusal('computer_type', refArg, resolved));
+        const hit = resolved.hit;
+        refInfo = { ref: refArg, snapshot: resolved.snapshot, contested: resolved.contested ?? null };
         payload.target = { hwnd: hit.hwnd, name: hit.name, type: hit.type, automationId: hit.automationId, rect: hit.rect, name_truncated: hit.nameTruncated === true };
       } else if (typeof args?.name === 'string' && args.name.trim()) {
         payload.name = args.name.trim();
@@ -820,6 +945,11 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         };
       }
       const out = { chars: res.chars };
+      if (refInfo) {
+        out.ref_snapshot = refInfo.snapshot;
+        const contest = refContestNote(refInfo.ref, refInfo);
+        if (contest) out.ref_ambiguous = contest;
+      }
       if (res.focused_window !== undefined) out.focused_window = `${res.focused_window || '(无标题)'} (pid ${res.focused_pid ?? 0})`;
       return out;
     },

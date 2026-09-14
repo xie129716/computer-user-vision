@@ -279,10 +279,10 @@ reader should be able to check line by line rather than discover:
   screenshot your model provider already receives, described above.
 
 All of these are also asserted by `verify/` — `registration.mjs`, `overlay.mjs`, `overlay-hit.mjs`,
-`general-workflows.mjs` and `plugin-exports.mjs` fail loudly if one of them stops being true.
-`general-workflows.mjs` is the scenario-neutral one: it drives the whole interaction surface across
-four unrelated UI stacks (Win32, UWP/XAML, Chromium, the desktop shell) and asserts an observable
-outcome each time rather than "the call returned ok".
+`general-workflows.mjs`, `ref-snapshots.mjs` and `plugin-exports.mjs` fail loudly if one of them stops
+being true. `general-workflows.mjs` is the scenario-neutral one: it drives the whole interaction
+surface across four unrelated UI stacks (Win32, UWP/XAML, Chromium, the desktop shell) and asserts an
+observable outcome each time rather than "the call returned ok".
 
 ---
 

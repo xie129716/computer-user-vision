@@ -210,16 +210,25 @@ if (calcWin) {
   calcPid = appWin?.pid ?? calcWin.pid;
   const act = await call('computer_activate_window', { pid: calcPid });
   const [aw, ah] = fgSize(act);
-  check('A6 activate by pid refuses to settle for a 0x0 helper window',
-    !!act.foreground && aw > 200 && ah > 200,
-    `pid ${calcPid} -> "${act.foreground?.title}" ${aw}x${ah} class ${act.foreground?.class}`);
+  check('A6 activating a packaged app by its own pid reaches a real window',
+    !!act.foreground && aw > 200 && ah > 200 && act.activated !== false,
+    `pid ${calcPid} -> "${act.foreground?.title}" ${aw}x${ah} activated=${act.activated}`);
+  // A packaged app's own windows cannot hold the foreground, so the frame that hosts
+  // the process is activated instead. That substitution has to be VISIBLE: `requested`
+  // on its own would leave the caller believing its own handle came forward.
+  check('A7 when a different handle is activated, the result says so',
+    typeof act.resolved_from !== 'number'
+      || (typeof act.note === 'string' && act.note.includes(String(act.requested))),
+    typeof act.resolved_from === 'number'
+      ? `substituted: asked ${act.resolved_from}, activated ${act.requested}`
+      : `no substitution needed (pid ${calcPid} owned the window that came forward)`);
 } else {
   check('A6 activate by pid refuses to settle for a 0x0 helper window', false, 'Calculator never appeared');
 }
 
 const bogus = await call('computer_activate_window', { pid: 999999 });
 const bogusText = JSON.stringify(bogus);
-check('A7 a pid that owns no real window is refused, with a reason',
+check('A8 a pid that owns no real window is refused, with a reason',
   /no matching|not found|hidden|helper|没|未|不存在/i.test(bogusText), bogusText.slice(0, 160));
 
 // ═══ B. Notepad: the plain Win32 path ══════════════════════════════════════

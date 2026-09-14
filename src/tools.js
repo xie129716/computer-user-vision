@@ -409,6 +409,12 @@ function screenshotEnvelope(value) {
 
   const list = elementLine(v.elements);
   if (list) {
+    // The snapshot id has to be IN THE RENDERED TEXT, not only in the structured
+    // value: the model reads this text, and an id it never sees is an id it can
+    // never pin. Caught by trying to use the feature through the live session.
+    if (v.snapshot) {
+      lines.push(`snapshot: ${v.snapshot}  (pass snapshot:"${v.snapshot}" to computer_click / computer_type to pin these refs to this enumeration)`);
+    }
     lines.push(list);
     lines.push('Address any of these by ref — computer_click {ref: "e12"} — or by visible text, computer_click {name: "<text>"}. That needs no pixel arithmetic and survives the window moving. Use screen_mapping only for something that is not in the list.');
   } else if (v.elements_skipped) {
@@ -722,6 +728,11 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
           const win = value?.window;
           if (win?.title) lines.push(`window: "${win.title}" hwnd=${win.hwnd} rect=[${(win.rect ?? []).join(',')}]`);
           lines.push(`scanned ${value?.scanned ?? 0} descendants in ${value?.ms ?? 0} ms`);
+          // Rendered, not just structured: the model reads this text, and a
+          // snapshot id it cannot see is one it can never pin.
+          if (value?.snapshot) {
+            lines.push(`snapshot: ${value.snapshot}  (pass snapshot:"${value.snapshot}" to computer_click / computer_type to pin these refs to this enumeration)`);
+          }
           lines.push(elementLine(value?.elements) ?? 'no actionable elements found');
         }
         return [{ type: 'text', text: lines.join('\n') }];
@@ -1210,6 +1221,14 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
       else throw new Error('computer_activate_window: 需要 hwnd / pid / title 之一');
       const res = await runPs('act.ps1', payload, { signal: exec?.signal });
       const out = { requested: res.requested, foreground: describeWindow(res.foreground) };
+      // When a different handle was activated than the one asked for, say so. A
+      // caller that passed a packaged app's pid (or a child window's hwnd) gets its
+      // FRAME activated, and `requested` alone would leave that substitution silent.
+      if (res.resolved_from !== undefined) {
+        out.resolved_from = res.resolved_from;
+        out.note = `hwnd ${res.resolved_from} cannot hold the foreground (a child window, or a packaged app's own window), `
+          + `so the top-level window that hosts it, hwnd ${res.requested}, was activated instead.`;
+      }
       // "The window never came forward" is a RESULT, not an error: report it with
       // the foreground record and the hint. Throwing here only produced a generic
       // PowerShell failure message with none of that detail.
@@ -1221,6 +1240,10 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         } else {
           out.hint = '激活未生效：请求的窗口没有成为前台（可能被 UWP 或更高权限的窗口占住）。重试通常有效，也可以直接点它的标题栏。';
         }
+      } else {
+        // The tool advertises { requested, foreground, activated }; reporting it only
+        // on failure made absence do double duty as "succeeded".
+        out.activated = true;
       }
       return out;
     },

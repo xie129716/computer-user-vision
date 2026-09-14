@@ -117,6 +117,21 @@ const snap2 = els2res.snapshot;
 check('A2 computer_elements reports its own, newer snapshot', typeof snap2 === 'string' && snap2 !== snap1,
   `${snap1} -> ${snap2}`);
 
+// The model reads the RENDERED text, not the structured value, so an id that only
+// exists in the object is an id the model can never pin. The first implementation
+// had exactly that bug and it was caught by using the feature through the live
+// session rather than through this script - so both layers are asserted now.
+const rendered = (res, toolName) => (tool(toolName).output.render({}, res) ?? [])
+  .filter((b) => b.type === 'text').map((b) => b.text ?? '').join('\n');
+const elementsText = rendered(els2res, 'computer_elements');
+check('A3 the RENDERED elements text carries the snapshot id',
+  elementsText.includes(snap2),
+  elementsText.split('\n').find((l) => l.startsWith('snapshot:')) ?? '(no snapshot line in the rendered text)');
+const shotText = rendered(shot1, 'computer_screenshot');
+check('A4 the RENDERED screenshot envelope carries the snapshot id',
+  shotText.includes(snap1),
+  shotText.split('\n').find((l) => l.startsWith('snapshot:')) ?? '(no snapshot line in the rendered text)');
+
 // The widest ref is Notepad's text area: clicking into it is harmless.
 const edit1 = els1.filter((e) => e.rect && e.rect[2] - e.rect[0] > 300)
   .sort((a, b) => (b.rect[2] - b.rect[0]) * (b.rect[3] - b.rect[1]) - (a.rect[2] - a.rect[0]) * (a.rect[3] - a.rect[1]))[0];

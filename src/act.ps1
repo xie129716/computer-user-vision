@@ -173,6 +173,21 @@ public class CUAct {
   }
   public static string Cls(IntPtr h) { var sb = new StringBuilder(256); GetClassName(h, sb, sb.Capacity); return sb.ToString(); }
   public static uint PidOf(IntPtr h) { uint pid; GetWindowThreadProcessId(h, out pid); return pid; }
+  /**
+   * The ROOT ancestor of a window, or the window itself when it is already a root.
+   *
+   * Only a root window can hold the foreground: SetForegroundWindow on anything
+   * else does nothing at all. This matters for every packaged (UWP) app, whose
+   * `Windows.UI.Core.CoreWindow` is a CHILD of the `ApplicationFrameWindow` owned
+   * by ApplicationFrameHost - and that CoreWindow is typically the largest window
+   * the app's own process owns, so a pid-based lookup picks exactly the one window
+   * that cannot be activated. For an ordinary top-level window this is a no-op.
+   */
+  public static IntPtr Root(IntPtr h) {
+    if (h == IntPtr.Zero) return IntPtr.Zero;
+    IntPtr r = GetAncestor(h, 2 /* GA_ROOT */);
+    return r == IntPtr.Zero ? h : r;
+  }
   public static IntPtr Foreground() { return GetForegroundWindow(); }
   public static uint ForegroundThread() { uint pid; return GetWindowThreadProcessId(GetForegroundWindow(), out pid); }
 
@@ -1213,6 +1228,15 @@ switch ($action) {
   'activate' {
     $target = Resolve-Window -hwnd $cfg.hwnd -pid_ $cfg.pid -title $cfg.title
     if ($null -eq $target -or $target -eq [IntPtr]::Zero) { Fail("no matching window (not found by hwnd/pid/title)") }
+    # Only a ROOT window can hold the foreground. This is a no-op for an ordinary
+    # window and matters when the caller named a genuine CHILD window (a control's
+    # hwnd, an owned dialog), which SetForegroundWindow will simply ignore.
+    #
+    # It does NOT rescue packaged apps: measured on the Windows 11 Calculator, its
+    # `Windows.UI.Core.CoreWindow` reports GA_ROOT as ITSELF - it is a root window,
+    # just one Windows refuses to foreground. That case is handled below.
+    $asked = $target
+    $target = [CUAct]::Root($target)
     [void][CUAct]::Activate($target)
     Start-Sleep -Milliseconds 220
     $fg = [CUAct]::Foreground()
@@ -1224,11 +1248,41 @@ switch ($action) {
     $fgArea = if ($null -ne $fr) { ($fr.Right - $fr.Left) * ($fr.Bottom - $fr.Top) } else { 0 }
     $fgVisible = ($fg -ne [IntPtr]::Zero) -and [CUAct]::IsWindowVisible($fg)
     $succeeded = ($fg -eq $target) -and ($fgArea -gt 0)
+
+    # A packaged app's own windows cannot be foregrounded, and the one that a pid
+    # lookup picks is exactly that one (it is the largest window the app's process
+    # owns). Its frame is owned by ApplicationFrameHost instead, so ask which
+    # top-level window hosts this process and try that rather than failing with a
+    # correct but useless "activated: false".
+    #
+    # WindowHostingPid already existed, but was only consulted when the process owned
+    # NO usable window of its own - so the common packaged-app case never reached it.
+    if (-not $succeeded -and $null -eq $cfg.hwnd -and $null -ne $cfg.pid) {
+      $hosted = [CUAct]::WindowHostingPid([uint32][int]$cfg.pid)
+      if ($hosted -ne [IntPtr]::Zero -and $hosted -ne $target) {
+        [void][CUAct]::Activate($hosted)
+        Start-Sleep -Milliseconds 220
+        $fg2 = [CUAct]::Foreground()
+        $fr2 = if ($fg2 -eq [IntPtr]::Zero) { $null } else { [CUAct]::VisibleRect($fg2) }
+        $a2 = if ($null -ne $fr2) { ($fr2.Right - $fr2.Left) * ($fr2.Bottom - $fr2.Top) } else { 0 }
+        if (($fg2 -eq $hosted) -and ($a2 -gt 0)) {
+          $target = $hosted; $fg = $fg2; $fr = $fr2; $fgArea = $a2; $fgVisible = $true; $succeeded = $true
+        }
+      }
+    }
+
     $out = [ordered]@{
       ok = $true
       activated = $succeeded
       requested = $target.ToInt64()
       foreground = (WindowRecord $fg)
+    }
+    if ($target -ne $asked) {
+      # Say so rather than silently activating a different handle than the caller
+      # named: a child window cannot be brought to the front, and a packaged app's
+      # own window has to be replaced by the frame that hosts it.
+      $out.resolved_from = $asked.ToInt64()
+      $out.hint_en = "hwnd $($asked.ToInt64()) cannot hold the foreground (a child window, or a packaged app's own window); the top-level window that hosts it, hwnd $($target.ToInt64()), was activated instead"
     }
     if (-not $succeeded) {
       # Hiding a foreground window leaves Windows reporting it as foreground even

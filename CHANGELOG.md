@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.3.31 (using the new feature found two things the tests could not)
+
+Both came from driving the plugin through a restarted live session rather than through the verifier —
+which is the point of restarting rather than trusting a green suite.
+
+- **The snapshot id was never shown to the model.** `computer_elements` and `computer_screenshot`
+  render their own text rather than the generic `key: value` renderer, and the `snapshot` field lived
+  only in the STRUCTURED value, which the model never sees. An id it cannot see is an id it can never
+  pin, so the whole `snapshot:` parameter was unusable in practice. Both renderers now print:
+
+  > snapshot: s2  (pass snapshot:"s2" to computer_click / computer_type to pin these refs to this enumeration)
+
+  `verify/ref-snapshots.mjs` now asserts on the **rendered text**, not on the object — that was
+  precisely the layer the first version of the test checked by mistake.
+
+- **Activating a packaged app by its own pid could not work.** A UWP app's
+  `Windows.UI.Core.CoreWindow` is the largest window its process owns, so a pid lookup picks exactly
+  the one window Windows refuses to foreground: the result was a correct but useless
+  `activated: false`. Measured first, and it killed the obvious fix — `GetAncestor(coreWindow,
+  GA_ROOT)` returns the CoreWindow **itself**, so it is a root window and climbing to the root changes
+  nothing. The frame that hosts it belongs to `ApplicationFrameHost`, and `WindowHostingPid` already
+  knew how to find it — but it was only consulted when the process owned *no* usable window, so the
+  common case never reached it. It is now a fallback when activation does not take.
+
+  The substitution is reported rather than silent: `resolved_from` plus a `note` naming both handles,
+  because `requested` alone would leave the caller believing its own handle came forward.
+
+  `Root()` is kept for what it does fix — a caller that names a genuine CHILD window, which
+  `SetForegroundWindow` ignores outright.
+
+- **`computer_activate_window` advertised `{requested, foreground, activated}` but only set
+  `activated` on FAILURE**, so absence did double duty as success. It now reports `activated: true`.
+
+- `verify/general-workflows.mjs` grew to 18 checks (A6 reach-a-real-window, A7 report-the-substitution).
+
 ## 0.3.30 (a shipped verifier that failed about one run in three)
 
 No plugin code changed. `verify/general-workflows.mjs` D2 — "a refused call sends no input at all" —

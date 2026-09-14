@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.30 (a shipped verifier that failed about one run in three)
+
+No plugin code changed. `verify/general-workflows.mjs` D2 — "a refused call sends no input at all" —
+failed intermittently, and the cause was the harness, not the plugin:
+
+- **`Set-Clipboard` fails with `CLIPBRD_E_CANT_OPEN` whenever another process holds the clipboard
+  open**, and that happens often enough to be roughly one run in three. The helper ignored the error,
+  so the check then read the PREVIOUS clipboard contents — the user's own `2026/9/9` — and reported it
+  as "input was sent". A test that blames the code for a clipboard race is worse than no test.
+- `setClip` now retries and **confirms the write took**, and D2 asserts the property directly (the
+  refused text appears nowhere) with the strong "clipboard is byte-for-byte unchanged" form used when
+  priming succeeded — and it says which form ran. Measured **4/4 green** afterwards, against 1 failure
+  in 3 before.
+
+Worth recording because it is the second time in this series that a red result was the test's own
+fault rather than the plugin's, and the first `Set-Clipboard` failure was silently indistinguishable
+from a real one.
+
 ## 0.3.29 (snapshot-scoped element refs — and the first rule was too strict)
 
 - **Every enumeration now returns a `snapshot` id** (`s7`), and refs are stored per

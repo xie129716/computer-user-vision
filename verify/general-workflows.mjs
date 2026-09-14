@@ -110,10 +110,27 @@ async function waitForWindow(pred, tries = 25) {
 
 // ── clipboard, saved and restored so the test is not destructive ────────────
 const savedClip = ps('Get-Clipboard -Raw -ErrorAction SilentlyContinue');
-const setClip = (text) => {
+const putClip = (text) => {
   const b64 = Buffer.from(text, 'utf8').toString('base64');
   ps(`$t=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${b64}')); Set-Clipboard -Value $t`);
 };
+/**
+ * Write the clipboard and CONFIRM it took.
+ *
+ * `Set-Clipboard` fails with CLIPBRD_E_CANT_OPEN whenever another process has the
+ * clipboard open, and that is intermittent - measured as roughly one run in three
+ * here. Ignoring the error made a check read the PREVIOUS clipboard contents and
+ * fail for a reason that had nothing to do with the plugin. Retry, and tell the
+ * caller when it never succeeded so the assertion can say so instead of lying.
+ */
+function setClip(text, tries = 5) {
+  for (let i = 0; i < tries; i += 1) {
+    putClip(text);
+    if (getClip() === text) return true;
+    spawnSync('powershell.exe', ['-NoProfile', '-Command', 'Start-Sleep -Milliseconds 120'], { stdio: 'ignore' });
+  }
+  return false;
+}
 const getClip = () => ps('Get-Clipboard -Raw -ErrorAction SilentlyContinue').replace(/\r\n/g, '\n').replace(/\n+$/, '');
 
 /**
@@ -361,14 +378,21 @@ console.log('\n── D. guards ──');
 if (npWin) {
   await call('computer_activate_window', { hwnd: npWin.hwnd });
   await sleep(300);
-  setClip('sentinel');
+  const primed = setClip('sentinel');
   const refused = await call('computer_type', { text: 'should never appear', expect_window: 'no-such-window-title-xyz' });
   await sleep(300);
   const clipNow = getClip();
   const refusedText = JSON.stringify(refused);
   check('D1 expect_window refuses on a mismatch', /refus|拒绝|expect/i.test(refusedText), refusedText.slice(0, 140));
-  check('D2 a refused call sends no input at all', clipNow === 'sentinel',
-    `clipboard still ${JSON.stringify(clipNow)}`);
+  // The property is "the refused call typed nothing". The strong form of that is
+  // "the clipboard still holds the sentinel", but it presumes the clipboard was
+  // writable in the first place, and CLIPBRD_E_CANT_OPEN made this check fail for a
+  // reason unrelated to the plugin. Fall back to the direct test when priming did
+  // not take, and say which form actually ran.
+  check('D2 a refused call sends no input at all',
+    !clipNow.includes('should never appear') && (!primed || clipNow === 'sentinel'),
+    primed ? `clipboard unchanged: ${JSON.stringify(clipNow.slice(0, 40))}`
+      : `clipboard not writable (CLIPBRD_E_CANT_OPEN); refused text absent: ${!clipNow.includes('should never appear')}`);
 }
 
 const unknownRef = await call('computer_click', { ref: 'e99999' });

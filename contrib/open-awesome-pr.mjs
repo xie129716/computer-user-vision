@@ -100,10 +100,10 @@ that overlap is the decision this PR is asking for, not a detail underneath it.
 
 ## The slot question, first
 
-This is not an addition beside that entry: the two cannot be installed together (see "Why this is a
-slot question" below), so one of them has to be the row. The review rules say a fork *is* added when
-it is the better-kept one or when it genuinely adds something, and that "the rule is not first-come;
-the rule is whichever is better". I am not asking you to take that on faith.
+This is not an addition beside that entry: the two cannot be installed together — same package name,
+same cordis row id, stated just below — so one of them has to be the row. The review rules say a fork
+*is* added when it is the better-kept one or when it genuinely adds something, and that "the rule is
+not first-come; the rule is whichever is better". I am not asking you to take that on faith.
 
 **Upstream does not load on the DSH that ships today.** Its \`src/index.js\` opens with
 

@@ -76,19 +76,24 @@ const TARBALL = `${REPO_URL}/releases/latest/download/computer-user.tgz`;
  * "vision-native" would only have been a word. A description containing ": "
  * must be quoted.
  *
+ * The image capability leads, because it is the difference from upstream and the
+ * only reason the repository is called what it is: upstream had to be looked at
+ * through an external OCR tool, this one hands the picture to the model's own
+ * image input. An earlier revision of this line described only the element refs
+ * and dropped that — the reviewer would never have seen the upgrade.
+ *
  * Length is deliberate as well. The list's own entries run 182 characters at the
- * median and 314 at the 90th percentile; the first draft of this line was 495
- * (p98.5). Fewer clauses means fewer claims to verify, so it is trimmed into the
- * p90 band — keeping every checkable claim and every one that separates this fork
- * from the entry it forks.
+ * median and 314 at the 90th percentile; this line is 304, so the vision clause
+ * cost nothing — it replaced the longer "rather than a pixel estimated from a
+ * downscaled screenshot" phrasing. Fewer clauses means fewer claims to verify.
  */
 const ENTRY = `url: ${REPO_URL}
 name: ${OWNER}/${PLUGIN}
 category: tools
 tarball: ${TARBALL}
 description:
-  en: 'Windows desktop control forked from computer-user: 13 computer_* tools. Controls return as UI Automation refs, so a click lands on the exact control rectangle rather than a pixel estimated from a downscaled screenshot; expect_window rejects misdirected input, and Ctrl+Alt+Esc blocks every call until re-approval.'
-  zh: 'computer-user 分叉的 Windows 桌面操控插件：13 个 computer_* 工具。控件以 UI Automation 引用返回，点击因此落在控件的精确矩形上，而非从缩小截图估出的像素；expect_window 在前台窗口不对时拒绝输入；Ctrl+Alt+Esc 会阻断所有调用，直到用户重新授权。'
+  en: 'Windows desktop control forked from computer-user: 13 computer_* tools. Image-capable routes get the screenshot as a real image with an exact image-to-screen mapping, so no external OCR; elements return as UI Automation refs so a click lands on the exact control rectangle; Ctrl+Alt+Esc stops every call.'
+  zh: 'computer-user 分叉的 Windows 桌面操控插件：13 个 computer_* 工具。模型支持图像输入时截图直接作为图片返回，附精确的图像→屏幕映射，无需外接 OCR；控件以 UI Automation 引用返回，点击落在精确矩形上；Ctrl+Alt+Esc 可阻断所有调用。'
 `;
 
 const TITLE = `Add ${OWNER}/${PLUGIN}`;
@@ -138,6 +143,20 @@ quietly.
 
 ## What the fork adds, all of it in the repository
 
+- **The screenshot goes to the model as an image — no external OCR step.** The tool asks the harness
+  what the routed model accepts (\`ctx.llm.resolveModelInfo(provider, model)\`, then
+  \`inputModalities.includes('image')\`) instead of trusting a manual switch or a guess; for
+  \`deepseek-flash\` (DeepSeek-V41-Flash) that declaration includes \`image\`. On such a route the
+  capture is saved through the host's \`attachments.saveImage()\` and rides the tool result as a real
+  image block; on a text-only route it falls back to the PNG path and reports \`vision: false\`.
+  Upstream had to be looked at through an external OCR tool because the model could not see the
+  screen; this fork does not, so \`picturereader\` becomes a fallback rather than a requirement.
+- **The coordinate mapping stays exact through the host's own downscale.** The capture is fitted to the
+  adapter's declared \`imagePixelBudget\` (640,000 — the same \`DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET\`
+  \`dsh-llm-deepseek\` sets for this model), so the server does not downscale a second time.
+  \`screen_per_pixel\` then folds the capture's own crop/scale together with whatever normalization the
+  host applied when saving, and the envelope prints the resulting formula for the model:
+  \`screen_mapping: screen_x = vx + image_x * kx ; screen_y = vy + image_y * ky\`.
 - **Element refs, so a click stops depending on a pixel estimate.** A 1920x1080 desktop is
   2,073,600 px, above the 640,000 px vision budget, so the preview a model reasons about is
   ~1045x588 — one image pixel is 1.84 screen pixels and a 22 px toolbar button is 12 px tall in
@@ -205,8 +224,12 @@ PowerShell/SendInput with UI Automation refs and a user-visible stop.
 - \`scripts/generate-readme.mjs\` — exit 0, and the entry line renders.
 - \`scripts/check-bleed.mjs\` — **no pair**: this description shares no 40-character run with any
   existing entry, including the upstream one it forks.
-- The description was trimmed from 495 characters to 313 (the list runs 182 at the median and 314 at
-  p90), so there are fewer claims to check; every remaining one is countable or greppable.
+- The description is 304 characters (the list runs 182 at the median and 314 at p90), so there are
+  fewer claims to check; every remaining one is countable or greppable.
+- \`verify/vision-screenshot.mjs\` — **16/16**, including that an image block is attached on an
+  image-capable route, that none is attached on a text-only route, and that \`screen_per_pixel\` still
+  reproduces the real screen size after the host halves the picture
+  (522 * 3.6782 = 1920.0 vs screen 1920).
 - \`releases/latest/download/computer-user.tgz\` returns HTTP 200 and the asset name is version-free,
   so it will not 404 on the next release.
 - Official packages are \`peerDependencies\`, with an explicit prerelease branch per tuple. The
@@ -294,9 +317,25 @@ async function main() {
     return 0
   }
 
-  const pr = gh(['api', '--method', 'POST', `repos/${UPSTREAM}/pulls`, '--input', '-'],
-    { title: TITLE, head: `${OWNER}:${BRANCH}`, base: 'main', body: BODY, draft });
-  console.log(`\nopened ${draft ? 'draft ' : ''}PR #${pr.number}: ${pr.html_url}`)
+  // Re-running this after the PR exists must not crash. Creating a second PR for
+  // the same head/base is a 422 from GitHub, and the branch update above is
+  // idempotent, so the honest thing is to update the open PR in place: a re-run
+  // after editing ENTRY or BODY should publish the edit, not fail.
+  const open_prs = ghQuiet(['api', `repos/${UPSTREAM}/pulls?head=${OWNER}:${BRANCH}&state=open`]);
+  const existing = Array.isArray(open_prs) ? open_prs[0] : null;
+
+  let pr;
+  if (existing) {
+    // `draft` is create-only on this endpoint, so an update leaves the draft
+    // flag as it is rather than sending a field GitHub may reject.
+    pr = gh(['api', '--method', 'PATCH', `repos/${UPSTREAM}/pulls/${existing.number}`, '--input', '-'],
+      { title: TITLE, body: BODY });
+    console.log(`\nupdated PR #${pr.number} (draft flag unchanged): ${pr.html_url}`)
+  } else {
+    pr = gh(['api', '--method', 'POST', `repos/${UPSTREAM}/pulls`, '--input', '-'],
+      { title: TITLE, head: `${OWNER}:${BRANCH}`, base: 'main', body: BODY, draft });
+    console.log(`\nopened ${draft ? 'draft ' : ''}PR #${pr.number}: ${pr.html_url}`)
+  }
   return 0;
 }
 

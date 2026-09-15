@@ -143,6 +143,12 @@ quietly.
 
 ## What the fork adds, all of it in the repository
 
+- **Ported to the current DSH settings API (the 0.1.5 line), without dropping the older one.** 0.1.5
+  removed the module-level `settingsNamespace()` helper upstream imported by name. The fork imports
+  the module namespace and feature-detects it —
+  `settingsModule.settingsNamespace?.(value) ?? value` at `src/index.js:73` — registers with
+  `provider.register(namespace, Config, { base })`, and writes through `SettingsScope.update(patch)`,
+  the 0.1.5 write path (there is no `scope.set`). It runs on 0.1.5 and still runs on the older line.
 - **The screenshot goes to the model as an image — no external OCR step.** The tool asks the harness
   what the routed model accepts (\`ctx.llm.resolveModelInfo(provider, model)\`, then
   \`inputModalities.includes('image')\`) instead of trusting a manual switch or a guess; for
@@ -179,12 +185,21 @@ quietly.
   it refuses *without sending any input* and returns the window it found. Reporting
   \`focused_window\` only *after* typing is a post-mortem — during acceptance a \`Ctrl+H\` meant for
   Notepad landed in the browser that way.
-- **A control indicator with a real stop.** A pulsing frame, a cursor halo, and a top banner with a
-  Stop button and a \`Ctrl+Alt+Esc\` global hotkey. Either writes a marker that turns into a hard
-  refusal of every \`computer_*\` call until the user re-approves; a new user message, \`/computer\`,
-  or the chat switch each lift it.
-- **A mode gate and disk-backed approval** (\`disabled / readonly / manual / auto\`), so control is
-  revocable and survives a host restart.
+- **A control indicator you can see, and stop.** While the AI holds control, \`src/overlay.ps1\` draws a
+  slowly pulsing gradient frame on all four screen edges, a halo that follows the mouse and changes
+  shape with the cursor, and a top banner naming the controller with a Stop button and a
+  \`Ctrl+Alt+Esc\` global hotkey (\`MOD_ALT|MOD_CONTROL\` + \`VK_ESCAPE\`). The \`stop\` marker is written
+  **only** by the user; while it exists every \`computer_*\` call is refused, and it stays down until
+  the user re-approves — by \`/computer\`, the switch below, or merely sending a new message. The idle
+  indicator auto-hides after 25 s; a user stop does not.
+- **A computer-use switch in the chat input.** Registered at \`conversation.input.left\`, beside the
+  composer, with three visible states: on, off, and *stopped by you* (amber). Turning it on grants
+  approval silently — exactly what \`/computer\` does — and turning it off stops control immediately and
+  blocks further calls. The full settings page registers a \`settings.section\` of its own.
+- **A mode gate and disk-backed approval.** \`disabled / readonly / manual / auto\`, plus
+  \`approval_scope: session | profile\` — session keeps one \`/computer\` valid for that session, profile
+  makes it valid for every session until revoked. Both go to disk, so they survive a host restart, and
+  \`ai_can_change_mode\` defaults to **off**, so the model cannot widen its own permissions.
 
 ## Two things to know before listing
 
@@ -207,8 +222,9 @@ download figure here, because npm's \`computer-user\` points at a different repo
   it cannot be added afterwards. The relationship is recorded in \`package.json\` instead: \`author\`,
   an explicit \`forkedFrom\`, and a \`repository\` pointing at this repository, with upstream's
   copyright line kept in \`LICENSE\` (MIT).
-- \`screenshots.json\` declares 4 relative paths; all exist and stay inside the plugin directory, so
-  the storefront has a stable source it can pick up on its next nightly build.
+- \`screenshots.json\` declares 4 relative paths; all exist and stay inside the plugin directory, and
+  they are pictures of the two user-visible controls above — \`control-indicator.png\` and
+  \`stop-banner.png\` for the overlay, \`switch-on.png\` and \`switch-stopped.png\` for the chat switch.
 
 ## Not a duplicate of the other computer-use entries
 

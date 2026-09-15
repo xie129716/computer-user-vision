@@ -144,11 +144,11 @@ quietly.
 ## What the fork adds, all of it in the repository
 
 - **Ported to the current DSH settings API (the 0.1.5 line), without dropping the older one.** 0.1.5
-  removed the module-level `settingsNamespace()` helper upstream imported by name. The fork imports
+  removed the module-level \`settingsNamespace()\` helper upstream imported by name. The fork imports
   the module namespace and feature-detects it —
-  `settingsModule.settingsNamespace?.(value) ?? value` at `src/index.js:73` — registers with
-  `provider.register(namespace, Config, { base })`, and writes through `SettingsScope.update(patch)`,
-  the 0.1.5 write path (there is no `scope.set`). It runs on 0.1.5 and still runs on the older line.
+  \`settingsModule.settingsNamespace?.(value) ?? value\` at \`src/index.js:73\` — registers with
+  \`provider.register(namespace, Config, { base })\`, and writes through \`SettingsScope.update(patch)\`,
+  the 0.1.5 write path (there is no \`scope.set\`). It runs on 0.1.5 and still runs on the older line.
 - **The screenshot goes to the model as an image — no external OCR step.** The tool asks the harness
   what the routed model accepts (\`ctx.llm.resolveModelInfo(provider, model)\`, then
   \`inputModalities.includes('image')\`) instead of trusting a manual switch or a guess; for

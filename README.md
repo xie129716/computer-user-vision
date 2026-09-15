@@ -157,8 +157,8 @@ then covers far fewer pixels and the picture stays sharp.
 Requires **Windows**, **Node 22.19+ or 24+**, and a DSH profile (default `web`).
 
 ```bash
-dsh plugin --profile web add computer-user-vision     # from npm, once published
-dsh plugin --profile web add git+https://github.com/xie129716/computer-user-vision.git
+dsh plugin --profile web add computer-user-vision
+dsh plugin --profile web add git+https://github.com/xie129716/computer-user-vision.git  # from source
 ```
 
 ### Why this fork ships no patch file

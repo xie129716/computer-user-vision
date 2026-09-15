@@ -1,5 +1,5 @@
 /**
- * computer-user / output-guard.js — LLM output filter (host side).
+ * computer-user-vision / output-guard.js — LLM output filter (host side).
  *
  * Sits on the provider `stream()` exit and inspects the assistant TEXT output:
  *
@@ -15,7 +15,7 @@
  * 'text-delta', text }`. We buffer text deltas, sniff the buffer, and decide
  * per fingerprint.
  *
- * @module computer-user/output-guard
+ * @module computer-user-vision/output-guard
  */
 
 import { createHash } from 'node:crypto';

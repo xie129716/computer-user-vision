@@ -1,4 +1,4 @@
-# computer-user — bundle patch: inserts the computer-user plugin row.
+# computer-user-vision — bundle patch: inserts the computer-user-vision plugin row.
 - insert:
-    - id: computer-user
-      name: 'computer-user'
+    - id: computer-user-vision
+      name: 'computer-user-vision'

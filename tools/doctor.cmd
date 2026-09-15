@@ -1,5 +1,5 @@
 @echo off
-rem computer-user doctor launcher.
+rem computer-user-vision doctor launcher.
 rem
 rem pnpm runs lifecycle scripts in a shell where `node` is NOT necessarily on
 rem PATH on this machine (npm_node_execpath is unset too), so resolve the
@@ -13,7 +13,7 @@ rem
 rem Always exits 0: a health report must never fail a dependency install.
 setlocal EnableDelayedExpansion
 
-set "DOCTOR=%~dp0computer-user-doctor.mjs"
+set "DOCTOR=%~dp0computer-user-vision-doctor.mjs"
 set "NODEEXE="
 
 if defined npm_node_execpath set "NODEEXE=%npm_node_execpath%"
@@ -35,12 +35,12 @@ if not defined NODEEXE if exist "%ProgramFiles%\nodejs\node.exe" set "NODEEXE=%P
 if not defined NODEEXE if exist "%LOCALAPPDATA%\Programs\nodejs\node.exe" set "NODEEXE=%LOCALAPPDATA%\Programs\nodejs\node.exe"
 
 if not defined NODEEXE (
-  echo computer-user doctor: skipped - no node interpreter found 1>&2
+  echo computer-user-vision doctor: skipped - no node interpreter found 1>&2
   exit /b 0
 )
 
 if not exist "%DOCTOR%" (
-  echo computer-user doctor: skipped - %DOCTOR% missing 1>&2
+  echo computer-user-vision doctor: skipped - %DOCTOR% missing 1>&2
   exit /b 0
 )
 

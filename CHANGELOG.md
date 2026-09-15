@@ -1,3 +1,31 @@
+## 0.4.0 — renamed to `computer-user-vision`
+
+The package no longer shares upstream's npm name. It was `computer-user` on purpose — so a profile
+could drop this fork in exactly where the original sat — but a shared name makes every npm-keyed
+reader resolve **upstream** instead. The plugin market showed upstream's version and description on
+this fork's card, because it looks the package up by name; and installing by name got upstream's
+code, which does not load on current DSH.
+
+What moved with the name, so nothing is left half-renamed:
+
+- `package.json` `name`, and `cordis.patch.yml`'s row id and loader specifier.
+- The settings namespace (`computer-user` → `computer-user-vision`). Left alone, two plugins
+  installed side by side would both register the same namespace and one would fail to load.
+- The control route (`/computer-user/control` → `/computer-user-vision/control`) and the approval
+  store (`$DSH_HOME/computer-user-vision-approvals.json`), for the same collision reason.
+- The doctor script (`tools/computer-user-vision-doctor.mjs`) and the package paths in
+  `tools/install.mjs` and `verify/_profile.mjs`.
+
+Upgrading: remove the old dependency and add the new one — the dependency key changes from
+`computer-user` to `computer-user-vision`:
+
+    dsh plugin --profile <name> remove computer-user
+    dsh plugin --profile <name> add computer-user-vision
+
+Settings and approvals do not carry over; neither file existed for a released build, so there is
+nothing to migrate. The release asset is `computer-user-vision.tgz`; `computer-user.tgz` is still
+attached so links written before the rename keep resolving.
+
 # Changelog
 
 ## 0.3.32 (the suite was littering the desktop it tests)

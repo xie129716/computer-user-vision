@@ -1,4 +1,4 @@
-# computer-user / act.ps1 - the single compound action executor.
+# computer-user-vision / act.ps1 - the single compound action executor.
 #
 # Why this file exists (each point was measured on a real desktop, not assumed):
 #

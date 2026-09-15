@@ -1,5 +1,5 @@
 /**
- * computer-user / overlay lifecycle.
+ * computer-user-vision / overlay lifecycle.
  *
  * Owns the Codex-style "an agent is driving this computer" indicator: a separate
  * PowerShell process that draws the pulsing edge frame, the cursor halo and the
@@ -12,7 +12,7 @@
  *                the reason, which the mode gate turns into a hard refusal until
  *                the user re-approves
  *
- * @module computer-user/overlay
+ * @module computer-user-vision/overlay
  */
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -28,7 +28,7 @@ const STOP_LABELS = {
 };
 
 export function createOverlayController({ getConfig, logger } = {}) {
-  const dir = join(tmpdir(), 'computer-user');
+  const dir = join(tmpdir(), 'computer-user-vision');
   const heartbeatPath = join(dir, 'overlay-heartbeat');
   const stopPath = join(dir, 'overlay-stop');
   const pausePath = join(dir, 'overlay-pause');
@@ -36,7 +36,7 @@ export function createOverlayController({ getConfig, logger } = {}) {
   let child = null;
   let lastSpawnFailure = null;
 
-  const warn = (message) => logger?.warn?.(`[computer-user] overlay: ${message}`);
+  const warn = (message) => logger?.warn?.(`[computer-user-vision] overlay: ${message}`);
 
   const enabled = () => (getConfig?.() ?? {}).overlay !== false;
 

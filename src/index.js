@@ -1,5 +1,5 @@
 /**
- * computer-user — Codex-style computer use for DeepSeek Harness (DSH).
+ * computer-user-vision — Codex-style computer use for DeepSeek Harness (DSH).
  *
  * Reads the screen (computer_screenshot → PNG path) and drives the mouse &
  * keyboard (click / type / keypress / scroll / drag / move_mouse / wait /
@@ -13,11 +13,11 @@
  * image reader. On a text-only route it degrades to returning a file path for
  * an external scanner (picturereader image_scan / image_ocr).
  *
- * Settings (namespace `computer-user`, hot-reloaded via a runtime snapshot):
+ * Settings (namespace `computer-user-vision`, hot-reloaded via a runtime snapshot):
  *   mode — disabled / readonly / manual / auto
  *   screenshot_dir / default_scale / typing_interval_ms / scroll_units / debug
  *
- * @module computer-user
+ * @module computer-user-vision
  */
 
 import * as settingsModule from '@deepseek-ai/dsh-settings';
@@ -32,7 +32,7 @@ import { tmpdir } from 'node:os';
 import { join as joinPath, dirname as dirName } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const name = 'computer-user';
+export const name = 'computer-user-vision';
 
 /**
  * The plugin's own version, read from its package.json.
@@ -80,7 +80,7 @@ const getConfig = () => (sourceGetter ? sourceGetter() : undefined);
 
 /** Persist the runtime mode (used by computer_set_mode + /computer manual mode). */
 async function setMode(mode) {
-  if (typeof sourceSetter !== 'function') throw new Error('computer-user: 设置服务不可用');
+  if (typeof sourceSetter !== 'function') throw new Error('computer-user-vision: 设置服务不可用');
   await sourceSetter('mode', mode);
 }
 
@@ -143,7 +143,7 @@ export function apply(ctx, config) {
     return approvals.isApproved(sid);
   };
 
-  ctx.effect(() => () => overlay.shutdown({ purge: true }), 'computer-user: control indicator');
+  ctx.effect(() => () => overlay.shutdown({ purge: true }), 'computer-user-vision: control indicator');
 
   // ── register tools ──
   ctx.effect(() => {
@@ -180,10 +180,10 @@ export function apply(ctx, config) {
           : scope.set(key, value)
       );
       scope.watch(() => { /* trigger hot reload */ });
-      ctx.logger?.info?.(`[computer-user] settings namespace "${NS}" registered`);
+      ctx.logger?.info?.(`[computer-user-vision] settings namespace "${NS}" registered`);
     });
   } catch (error) {
-    ctx.logger?.warn?.(`[computer-user] settings disabled: ${String(error?.message ?? error)}`);
+    ctx.logger?.warn?.(`[computer-user-vision] settings disabled: ${String(error?.message ?? error)}`);
     sourceGetter = () => ({ ...config, mode: config?.mode ?? 'manual' });
   }
 
@@ -192,7 +192,7 @@ export function apply(ctx, config) {
   // attempt at this route vanished without leaving a single line behind.
   const routeTrace = (message) => {
     try {
-      const dir = joinPath(tmpdir(), 'computer-user');
+      const dir = joinPath(tmpdir(), 'computer-user-vision');
       mkdirSync(dir, { recursive: true });
       appendFileSync(joinPath(dir, 'route.log'), `${new Date().toISOString()} ${message}\n`, 'utf8');
     } catch { /* diagnostics must never break the plugin */ }
@@ -228,7 +228,7 @@ export function apply(ctx, config) {
           }
         });
         return () => { try { off?.(); } catch { /* ignore */ } };
-      }, 'computer-user: re-authorise on a user message');
+      }, 'computer-user-vision: re-authorise on a user message');
       routeTrace('re-authorise hook registered');
     } else {
       routeTrace('re-authorise hook skipped: ctx.on is not a function');
@@ -288,7 +288,7 @@ export function apply(ctx, config) {
       try {
         sctx.effect(() => webServer.register({
           kind: 'exact',
-          path: '/computer-user/control',
+          path: '/computer-user-vision/control',
           handler: async (req, res) => {
             if (!isLoopback(req)) { writeJson(res, 403, { error: 'loopback only' }); return; }
             if (req.method === 'GET') { writeJson(res, 200, snapshot()); return; }
@@ -322,8 +322,8 @@ export function apply(ctx, config) {
             }
             writeJson(res, 200, { ok: true, ...snapshot() });
           },
-        }), 'computer-user: control switch route');
-        routeTrace('route registered at /computer-user/control');
+        }), 'computer-user-vision: control switch route');
+        routeTrace('route registered at /computer-user-vision/control');
       } catch (error) {
         routeTrace(`route registration THREW: ${String(error?.message ?? error)}`);
       }
@@ -337,7 +337,7 @@ export function apply(ctx, config) {
     ctx.inject(['commands'], (sctx) => {
       sctx.commands.register({
         name: 'computer',
-        description: '批准当前会话使用 computer-user 的全部工具（手动批准模式下需要）',
+        description: '批准当前会话使用 computer-user-vision 的全部工具（手动批准模式下需要）',
         handler: async (invocation) => {
           // /computer 是开关：按一次批准，再按一次撤销。
           const targets = sessionTargetsFromInvocation(invocation);
@@ -354,7 +354,7 @@ export function apply(ctx, config) {
               ? {
                   kind: 'success',
                   text:
-                    '✅ 已批准（长期，所有会话生效）：computer-user 全部工具可用，已写入磁盘，宿主重启后仍保留。'
+                    '✅ 已批准（长期，所有会话生效）：computer-user-vision 全部工具可用，已写入磁盘，宿主重启后仍保留。'
                     + '\n再按一次 /computer 可撤销。'
                     + `\n批准文件：${approvals.file}`,
                 }
@@ -375,17 +375,17 @@ export function apply(ctx, config) {
             ? {
                 kind: 'success',
                 text:
-                  `✅ 已批准：computer-user 全部工具在本会话（${ids}）持续可用，本会话后续轮次无需重复授权，宿主重启后也保留。`
+                  `✅ 已批准：computer-user-vision 全部工具在本会话（${ids}）持续可用，本会话后续轮次无需重复授权，宿主重启后也保留。`
                   + '\n新对话需要重新按一次；若想一次批准所有会话，把「批准范围」设为 profile。'
                   + '\n再按一次 /computer 可撤销。',
               }
             : { kind: 'success', text: `🔒 已撤销批准：本会话（${ids}）的有副作用工具需重新 /computer 批准。` };
         },
       });
-      ctx.logger?.info?.('[computer-user] /computer command registered');
+      ctx.logger?.info?.('[computer-user-vision] /computer command registered');
     });
   } catch (error) {
-    ctx.logger?.warn?.(`[computer-user] commands service not available: ${String(error?.message ?? error)}`);
+    ctx.logger?.warn?.(`[computer-user-vision] commands service not available: ${String(error?.message ?? error)}`);
   }
 
   // ── LLM output guard: strip fake tool-call text written as conversation ──
@@ -436,7 +436,7 @@ export function apply(ctx, config) {
           reg.adapter = guardProxy;
           wrapped++;
         }
-        if (wrapped > 0) ctx.logger?.info?.(`[computer-user] output guard active on ${wrapped} provider(s)`);
+        if (wrapped > 0) ctx.logger?.info?.(`[computer-user-vision] output guard active on ${wrapped} provider(s)`);
       };
       wrapProviders();
       // re-wrap if providers register later (best-effort; ignore failures)
@@ -445,12 +445,12 @@ export function apply(ctx, config) {
       }
     });
   } catch (error) {
-    ctx.logger?.warn?.(`[computer-user] output guard unavailable: ${String(error?.message ?? error)}`);
+    ctx.logger?.warn?.(`[computer-user-vision] output guard unavailable: ${String(error?.message ?? error)}`);
   }
 
   // ── debug helper ──
   if (config?.debug) {
-    ctx.logger?.info?.(`[computer-user] executor: ${powerShellScript('act.ps1')}`);
+    ctx.logger?.info?.(`[computer-user-vision] executor: ${powerShellScript('act.ps1')}`);
   }
 }
 

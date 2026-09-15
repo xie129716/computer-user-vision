@@ -157,6 +157,7 @@ then covers far fewer pixels and the picture stays sharp.
 Requires **Windows**, **Node 22.19+ or 24+**, and a DSH profile (default `web`).
 
 ```bash
+dsh plugin --profile web add computer-user-vision     # from npm, once published
 dsh plugin --profile web add git+https://github.com/xie129716/computer-user-vision.git
 ```
 
@@ -198,15 +199,15 @@ before any side-effecting tool runs; `auto` lets the agent drive freely.
 
 ## The self-healing doctor
 
-`tools/computer-user-doctor.mjs` is a version-independent health check that **re-derives the
+`tools/computer-user-vision-doctor.mjs` is a version-independent health check that **re-derives the
 defects from the installed source** instead of replaying a diff, so it keeps working across
 releases. It verifies that the patch is registered, the vision adaptation is present, the settings
 import is generation-agnostic, the write path uses the current API, and the module actually loads —
 and it **repairs** the two API-drift items automatically.
 
 ```bash
-node tools/computer-user-doctor.mjs           # check, exit 1 when unhealthy
-node tools/computer-user-doctor.mjs --heal    # repair what is repairable
+node tools/computer-user-vision-doctor.mjs           # check, exit 1 when unhealthy
+node tools/computer-user-vision-doctor.mjs --heal    # repair what is repairable
 ```
 
 Installed into a profile as `scripts/`, it can run from a `postinstall` hook so any
@@ -264,11 +265,11 @@ reader should be able to check line by line rather than discover:
   topmost indicator and registers the `Ctrl+Alt+Esc` global hotkey, then exits when the heartbeat
   goes stale. It is deliberately **not** detached, so it cannot outlive the host — a detached GUI
   process is exactly how an indicator gets stuck on screen forever. Turn it off with `overlay: false`.
-- **Registers exactly one HTTP route on the DSH web server**: `GET`/`POST /computer-user/control`,
+- **Registers exactly one HTTP route on the DSH web server**: `GET`/`POST /computer-user-vision/control`,
   the endpoint behind the chat-input switch. It refuses any socket that is not loopback
   (`127.0.0.1` / `::1`), and the only thing it can change is this plugin's own run mode and stop
   marker — it cannot read files or run commands.
-- **Writes files outside the package**, and nothing else: `$DSH_HOME/computer-user-approvals.json`
+- **Writes files outside the package**, and nothing else: `$DSH_HOME/computer-user-vision-approvals.json`
   (which sessions and whether the profile is trusted — it outlives a host restart on purpose, so a
   restart does not silently revoke control), plus heartbeat / pause / stop / `route.log` files under
   the OS temp directory. No transcript, no screen content, no keystroke log.
@@ -309,10 +310,12 @@ The cross-generation settings bridge follows the pattern used by
 MIT — see [LICENSE](LICENSE). This fork is not affiliated with or endorsed by the upstream author;
 please report fork-specific problems here rather than upstream.
 
-**On the package name.** This package is called `computer-user`, the same name as the upstream npm
-package, and that is deliberate rather than an attempt to pass itself off as it: `cordis.patch.yml`
-registers the plugin under that specifier, so a profile can drop this fork in exactly where the
-original sat. The fork is stated where identity is actually read instead — `description`, `author`
-and a `forkedFrom` field in `package.json`, the first line of this README, and `repository`, which
+**On the package name.** The package is `computer-user-vision`, distinct from the upstream npm package
+`computer-user`. It used to share upstream's name, so a profile could drop this fork in exactly where
+the original sat — but a shared name makes every npm-keyed reader resolve **upstream** instead: the
+plugin market showed upstream's version and description on this fork's card, because it looks the
+package up by name, and installing by name got upstream's code, which does not load on current DSH.
+Distinct names cost the drop-in and buy correct identity. The fork is stated where identity is read —
+`description`, `author`, a `forkedFrom` field, the first line of this README, and `repository`, which
 points here. The package has **no `dependencies` at all**; the only entries are `peerDependencies` on
 the harness's own `@deepseek-ai/*` packages, so nothing here resolves to a copy of anyone's work.

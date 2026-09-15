@@ -24,7 +24,7 @@ import { PKG_DIR } from './_profile.mjs';
 const { createComputerTools } = await import(pathToFileURL(join(PKG_DIR, 'src', 'tools.js')).href);
 const { runPs } = await import(pathToFileURL(join(PKG_DIR, 'src', 'ps.js')).href);
 
-const WORK = join(tmpdir(), 'computer-user-verify');
+const WORK = join(tmpdir(), 'computer-user-vision-verify');
 
 /** Read PNG intrinsic size straight from the IHDR chunk. */
 async function pngSize(path) {

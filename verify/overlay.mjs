@@ -19,7 +19,7 @@ import { PKG_DIR } from './_profile.mjs';
 
 const { createOverlayController } = await import(pathToFileURL(join(PKG_DIR, 'src', 'overlay.js')).href);
 
-const dir = join(tmpdir(), 'computer-user');
+const dir = join(tmpdir(), 'computer-user-vision');
 const heartbeat = join(dir, 'overlay-heartbeat');
 const stopFile = join(dir, 'overlay-stop');
 

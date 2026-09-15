@@ -1,5 +1,5 @@
 /**
- * computer-user — Web settings card (client half).
+ * computer-user-vision — Web settings card (client half).
  *
  * Registers a 「电脑操作 / Computer Use」 section in the DSH Web settings page,
  * restyled to the settings-panel design language (the same vocabulary the
@@ -17,7 +17,7 @@
  * well as those that have one.
  */
 window.__ModuleLoader__.load({
-  id: "computer-user",
+  id: "computer-user-vision",
   factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;
@@ -73,16 +73,16 @@ window.__ModuleLoader__.load({
       ".__cu_switchStopped{color:#E0A33E}" +
       ".__cu_switchKnob{position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:#fff;transition:transform 160ms ease}" +
       ".__cu_switchOn .__cu_switchKnob{transform:translateX(14px)}";
-    var tagId = "computer-user/main.css";
+    var tagId = "computer-user-vision/main.css";
     if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=\"" + tagId + "\"]") === null) {
       var tag = document.createElement("style");
-      tag.dataset.plugin = "computer-user";
+      tag.dataset.plugin = "computer-user-vision";
       tag.dataset.pluginCss = tagId;
       tag.textContent = CSS;
       document.head.appendChild(tag);
     }
 
-    var NS = "computer-user";
+    var NS = "computer-user-vision";
     var inject = ["slots", "locale", "settingsScope"];
 
     var MODE_OPTS = [
@@ -94,7 +94,7 @@ window.__ModuleLoader__.load({
 
     var zh = {
       nav: "电脑操作",
-      intro: "computer-user：让 DSH 读屏幕并操作鼠标键盘（Codex computer-use 风格）。模型支持图像时截图会直接作为图片返回（无需 picturereader）；不支持时退回文件路径，交给 picturereader 的 image_scan/image_ocr。",
+      intro: "computer-user-vision：让 DSH 读屏幕并操作鼠标键盘（Codex computer-use 风格）。模型支持图像时截图会直接作为图片返回（无需 picturereader）；不支持时退回文件路径，交给 picturereader 的 image_scan/image_ocr。",
       mode: "运行模式",
       modeDisabled: "禁用",
       modeReadonly: "只读",
@@ -139,12 +139,12 @@ window.__ModuleLoader__.load({
       saved: "已保存",
       saving: "保存中…",
       error: "保存失败",
-      unavailable: "设置命名空间不可用（服务端未注册 computer-user 命名空间？）",
+      unavailable: "设置命名空间不可用（服务端未注册 computer-user-vision 命名空间？）",
       loading: "加载中…",
     };
     var en = {
       nav: "Computer Use",
-      intro: "computer-user: let DSH read the screen and drive mouse & keyboard (Codex computer-use style). Image-capable models get the screenshot attached directly (no picturereader); text-only models get a file path for picturereader's image_scan/image_ocr.",
+      intro: "computer-user-vision: let DSH read the screen and drive mouse & keyboard (Codex computer-use style). Image-capable models get the screenshot attached directly (no picturereader); text-only models get a file path for picturereader's image_scan/image_ocr.",
       mode: "Mode",
       modeDisabled: "Disabled",
       modeReadonly: "Read-only",
@@ -189,7 +189,7 @@ window.__ModuleLoader__.load({
       saved: "Saved",
       saving: "Saving…",
       error: "Save failed",
-      unavailable: "Settings namespace unavailable (computer-user not registered server-side?)",
+      unavailable: "Settings namespace unavailable (computer-user-vision not registered server-side?)",
       loading: "Loading…",
     };
 
@@ -414,7 +414,7 @@ window.__ModuleLoader__.load({
     // beginner already looks. Turning it on performs the /computer grant
     // silently; it drives the run MODE rather than a per-session approval, so it
     // needs no session id and covers every conversation at once.
-    var CONTROL_API = "/computer-user/control";
+    var CONTROL_API = "/computer-user-vision/control";
     var T = function (key) { return key; };
 
     function ControlSwitch() {
@@ -479,12 +479,12 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       var t = ctx.locale.bind(NS);
       T = t;
-      ctx.effect(function () { return ctx.locale.register(NS, { zh: zh, en: en }); }, "computer-user: dictionaries");
+      ctx.effect(function () { return ctx.locale.register(NS, { zh: zh, en: en }); }, "computer-user-vision: dictionaries");
       var scope = ctx.settingsScope.bind({ namespace: NS });
       ctx.slots.inject("settings.section", function () {
         return ctx.slots.register({
           name: "settings.section",
-          id: "computer-user",
+          id: "computer-user-vision",
           order: 50,
           label: function () { return t("nav"); },
           locale: NS,
@@ -495,7 +495,7 @@ window.__ModuleLoader__.load({
       ctx.slots.inject("conversation.input.left", function () {
         return ctx.slots.register({
           name: "conversation.input.left",
-          id: "computer-user-switch",
+          id: "computer-user-vision-switch",
           order: 40,
           locale: NS,
         }, ControlSwitch);

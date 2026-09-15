@@ -30,7 +30,7 @@ A **missing named export fails the entire ES module at link time**. The module n
 Reproduce it outside DSH, which is how this was pinned down:
 
 ```bash
-node --input-type=module -e "import('file:///<profile>/node_modules/computer-user/src/index.js').then(m=>console.log('OK',Object.keys(m))).catch(e=>console.log('FAILED:',e.message))"
+node --input-type=module -e "import('file:///<profile>/node_modules/computer-user-vision/src/index.js').then(m=>console.log('OK',Object.keys(m))).catch(e=>console.log('FAILED:',e.message))"
 # FAILED: The requested module '@deepseek-ai/dsh-settings' does not provide an export named 'settingsNamespace'
 ```
 

@@ -5,7 +5,7 @@
  * context, asserting that everything the upstream `settingsNamespace` import
  * used to take down is actually registered:
  *   - the 13 computer_* tools
- *   - the `computer-user` settings namespace (via provider.register)
+ *   - the `computer-user-vision` settings namespace (via provider.register)
  *   - the /computer approval command
  *   - the LLM output guard
  * Also drives computer_set_mode to prove sourceSetter writes through update().
@@ -74,7 +74,7 @@ check('every tool exposes a render function', tools.every((t) => t.output && typ
 
 const reg = registered.find((r) => r.kind === 'register');
 check('settings namespace registered through provider.register', !!reg, reg && `ns="${reg.ns}"`);
-check('namespace is the plain "computer-user" string (0.1.5 API)', reg?.ns === 'computer-user');
+check('namespace is the plain "computer-user-vision" string (0.1.5 API)', reg?.ns === 'computer-user-vision');
 check('namespace registered exactly once', registered.filter((r) => r.kind === 'register').length === 1);
 check('a watcher was attached for hot reload', watched === 1);
 check('/computer command registered', commands.length === 1 && commands[0].name === 'computer');

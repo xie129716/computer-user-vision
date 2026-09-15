@@ -1,6 +1,6 @@
 # Computer Use（电脑操作）—— 读屏 + 操作鼠标键盘（纯本地，不调用外部 API）
 
-computer-user 插件提供 13 个 `computer_*` 工具，让模型像人手一样操作本机 Windows
+computer-user-vision 插件提供 13 个 `computer_*` 工具，让模型像人手一样操作本机 Windows
 桌面：读屏 → **按元素引用定位目标** → 点击/输入/按键/滚动/拖拽 → 验证。
 
 > **三条铁律（都是踩过坑总结出来的）**：
@@ -262,7 +262,7 @@ Windows 下标准做法（纯本地 PowerShell）：
 
 ---
 
-## 相关设置（设置 → 插件 → 插件配置 → computer-user）
+## 相关设置（设置 → 插件 → 插件配置 → computer-user-vision）
 
 | 设置项 | 默认 | 说明 |
 |---|---|---|

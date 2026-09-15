@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * computer-user doctor — health check + version-independent self-repair.
+ * computer-user-vision doctor — health check + version-independent self-repair.
  *
  * Why this exists: a local adaptation is only as durable as the way it was
  * installed. Two shapes survive a `pnpm install`, and they need different
@@ -24,9 +24,9 @@
  *      guessing, and the pinned dependency keeps them in place.
  *
  * Usage:
- *   node tools/computer-user-doctor.mjs           # check, exit 1 if unhealthy
- *   node tools/computer-user-doctor.mjs --heal    # repair what is repairable
- *   node tools/computer-user-doctor.mjs --quiet   # only problems (postinstall)
+ *   node tools/computer-user-vision-doctor.mjs           # check, exit 1 if unhealthy
+ *   node tools/computer-user-vision-doctor.mjs --heal    # repair what is repairable
+ *   node tools/computer-user-vision-doctor.mjs --quiet   # only problems (postinstall)
  */
 import { readFile, writeFile, access, rename, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -45,7 +45,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  * assuming one: from `<profile>/scripts/` the package sits beside `HERE/..`,
  * while from a checkout the profile has to be looked up under the DSH home. An
  * earlier version hard-coded `HERE/..`, so running it straight from a checkout
- * searched `<repo>/node_modules/computer-user` and declared a perfectly healthy
+ * searched `<repo>/node_modules/computer-user-vision` and declared a perfectly healthy
  * profile "not installed".
  *
  * Overrides: CU_PROFILE_DIR (the profile directory), CU_PROFILE (its name).
@@ -55,7 +55,7 @@ function resolveProfileDir() {
   if (explicit) return resolve(explicit);
 
   const beside = resolve(join(HERE, '..'));
-  const hasPackage = (dir) => existsSync(join(dir, 'node_modules', 'computer-user', 'package.json'));
+  const hasPackage = (dir) => existsSync(join(dir, 'node_modules', 'computer-user-vision', 'package.json'));
   if (hasPackage(beside)) return beside;
 
   const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -68,7 +68,7 @@ function resolveProfileDir() {
 }
 
 const PROFILE_DIR = resolveProfileDir();
-const PKG_DIR = join(PROFILE_DIR, 'node_modules', 'computer-user');
+const PKG_DIR = join(PROFILE_DIR, 'node_modules', 'computer-user-vision');
 const SETTINGS_PKG = '@deepseek-ai/dsh-settings';
 
 const argv = new Set(process.argv.slice(2));
@@ -169,12 +169,12 @@ function repairScopeSetter(source) {
 
 // ── 1. is the package even installed? ───────────────────────────────────────
 if (!(await exists(PKG_DIR))) {
-  console.error(`computer-user doctor: package not installed at ${PKG_DIR}`);
+  console.error(`computer-user-vision doctor: package not installed at ${PKG_DIR}`);
   process.exit(HEAL ? 0 : 1);
 }
 
 const pkgJson = JSON.parse(await readFile(join(PKG_DIR, 'package.json'), 'utf8'));
-say(`computer-user ${pkgJson.version} at ${PKG_DIR}`);
+say(`computer-user-vision ${pkgJson.version} at ${PKG_DIR}`);
 
 // ── 2. will a reinstall keep the fork? ──────────────────────────────────────
 // An earlier version of this check only understood `pnpm patch`, so it reported
@@ -182,10 +182,10 @@ say(`computer-user ${pkgJson.version} at ${PKG_DIR}`);
 {
   const workspaceYaml = await readFile(join(PROFILE_DIR, 'pnpm-workspace.yaml'), 'utf8').catch(() => '');
   const profPkg = JSON.parse(await readFile(join(PROFILE_DIR, 'package.json'), 'utf8').catch(() => '{}'));
-  const spec = String((profPkg && profPkg.dependencies && profPkg.dependencies['computer-user']) || '');
+  const spec = String((profPkg && profPkg.dependencies && profPkg.dependencies['computer-user-vision']) || '');
   const isPinnedSpec = /^(https?:|git\+|file:|link:)/.test(spec);
-  const inWorkspace = /patchedDependencies:[\s\S]*computer-user@/.test(workspaceYaml);
-  const inPackage = !!(profPkg.pnpm && profPkg.pnpm.patchedDependencies && profPkg.pnpm.patchedDependencies['computer-user']);
+  const inWorkspace = /patchedDependencies:[\s\S]*computer-user-vision@/.test(workspaceYaml);
+  const inPackage = !!(profPkg.pnpm && profPkg.pnpm.patchedDependencies && profPkg.pnpm.patchedDependencies['computer-user-vision']);
   if (isPinnedSpec) {
     say(`  pinned by the profile dependency itself: ${spec}`);
   } else if (inWorkspace || inPackage) {
@@ -283,13 +283,13 @@ for (const action of actions) say(`  healer: ${action}`);
 for (const problem of problems) console.error(`  PROBLEM: ${problem}`);
 
 if (problems.length === 0) {
-  say('computer-user doctor: healthy');
+  say('computer-user-vision doctor: healthy');
   process.exit(0);
 }
 if (HEAL) {
   // Postinstall must never fail an install; problems are surfaced, not thrown.
-  console.error(`computer-user doctor: ${problems.length} unresolved problem(s) after healing`);
+  console.error(`computer-user-vision doctor: ${problems.length} unresolved problem(s) after healing`);
   process.exit(0);
 }
-console.error(`computer-user doctor: ${problems.length} problem(s)`);
+console.error(`computer-user-vision doctor: ${problems.length} problem(s)`);
 process.exit(1);

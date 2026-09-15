@@ -59,7 +59,7 @@ function parseArgs(argv) {
 function findPatch(profileDir) {
   const patches = join(profileDir, 'patches');
   if (!existsSync(patches)) return null;
-  const hit = readdirSync(patches).find((f) => f.startsWith('computer-user@') && f.endsWith('.patch'));
+  const hit = readdirSync(patches).find((f) => f.startsWith('computer-user-vision@') && f.endsWith('.patch'));
   return hit ? join(patches, hit) : null;
 }
 
@@ -67,7 +67,7 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   const version = JSON.parse(readFileSync(join(PACKAGE_ROOT, 'package.json'), 'utf8')).version;
   const profileDir = join(args.dshHome, 'profiles', args.profile);
-  const target = join(profileDir, 'node_modules', 'computer-user');
+  const target = join(profileDir, 'node_modules', 'computer-user-vision');
 
   console.log(`package : ${PACKAGE_ROOT}  (v${version})`);
   console.log(`profile : ${profileDir}`);
@@ -78,14 +78,14 @@ function main() {
     return 1;
   }
   if (!existsSync(target)) {
-    console.error(`\n[FAIL] ${target} does not exist, so this profile has never installed computer-user.`);
-    console.error('       Add "computer-user" to the profile first; a copy alone will not register it.');
+    console.error(`\n[FAIL] ${target} does not exist, so this profile has never installed computer-user-vision.`);
+    console.error('       Add "computer-user-vision" to the profile first; a copy alone will not register it.');
     return 1;
   }
 
   const patch = findPatch(profileDir);
   if (patch && !args.force) {
-    console.error(`\n[FAIL] this profile installs computer-user through a pnpm patch:\n         ${patch}`);
+    console.error(`\n[FAIL] this profile installs computer-user-vision through a pnpm patch:\n         ${patch}`);
     console.error('       The next `pnpm install` re-applies that patch and would silently undo this copy.');
     console.error('       Edit the patch, drop it from patchedDependencies, or pass --force to copy anyway.');
     return 1;

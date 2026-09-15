@@ -1,5 +1,5 @@
 /**
- * computer-user / approval store.
+ * computer-user-vision / approval store.
  *
  * `/computer` used to grant approval in a module-level Set, which meant the
  * grant evaporated on every host restart and had to be re-typed for each new
@@ -13,13 +13,13 @@
  * than to any profile's node_modules. It holds only session ids and a boolean:
  * no transcripts, no paths, nothing derived from the screen.
  *
- * @module computer-user/approvals
+ * @module computer-user-vision/approvals
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
-const FILE_NAME = 'computer-user-approvals.json';
+const FILE_NAME = 'computer-user-vision-approvals.json';
 
 function resolveHome() {
   const fromEnv = process.env.DSH_HOME;
@@ -48,7 +48,7 @@ export function createApprovalStore({ logger } = {}) {
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, JSON.stringify(state, null, 2), 'utf8');
     } catch (error) {
-      logger?.warn?.(`[computer-user] could not persist approvals: ${String(error?.message ?? error)}`);
+      logger?.warn?.(`[computer-user-vision] could not persist approvals: ${String(error?.message ?? error)}`);
     }
   }
 

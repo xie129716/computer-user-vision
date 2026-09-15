@@ -1,4 +1,4 @@
-# computer-user（computer-user-vision 分支）
+# computer-user-vision（computer-user-vision 分支）
 
 > **这是非官方分支。** 原始插件由 [jing-hy](https://github.com/jing-hy/computer-user) 开发（MIT）。
 > 本分支修复了两件事：
@@ -13,7 +13,7 @@
 
 ---
 
-# computer-user
+# computer-user-vision
 
 给 DeepSeek Harness（DSH，含 EAC 桌面客户端）的 **Codex 式电脑操作**插件：读屏幕并操作
 鼠标键盘 —— 截图 → 看图 → click/type/keypress/scroll/drag → 验证。**仅支持 Windows。**
@@ -91,13 +91,13 @@ computer_screenshot → image_compare           # 验证
 ## 安装
 
 ```bash
-npm install computer-user
+npm install computer-user-vision
 ```
 
 或在 DSH profile 里：
 
 ```bash
-dsh plugin --profile web add computer-user
+dsh plugin --profile web add computer-user-vision
 ```
 
 然后重启 DSH（或到 EAC「设置 → 插件 → 管理」启用）。工具对所有会话生效；设置卡在「设置 →
@@ -163,12 +163,12 @@ computer_screenshot → image_compare             # 验证
   与 `computer_get_cursor_position`。
 - headless 真实场景：模型在 `dsh --profile headless` 中自主完成 5 步任务
   （screenshot → image_scan → type "hello" → screenshot → image_ocr），协调 picturereader
-  与 computer-user 工具，OCR 确认输入文字出现在屏幕上。
+  与 computer-user-vision 工具，OCR 确认输入文字出现在屏幕上。
 - 滚轮**端到端验证通过**：滚动条位置变化 + MouseWheel 事件触发均正常。注意：鼠标若落在
   搜狗输入法等置顶悬浮窗上，滚轮事件会被悬浮窗吸收——把光标移到空白处再滚（与任何基于
   光标的输入同理）。
 - EAC 兼容：与 picturereader 在同一宿主内可并存加载（视觉模式下不再依赖它）；对全部内置
-  插件静态扫描，`computer_*` 工具名 / `computer-user` 命名空间零冲突。
+  插件静态扫描，`computer_*` 工具名 / `computer-user-vision` 命名空间零冲突。
 - 视觉直返实测：`deepseek-flash`（DeepSeek-V41-Flash）路由下 `computer_screenshot` 返回
   图片块 + `screen_per_pixel`，模型可直接读屏并换算坐标；纯文本路由自动退回路径模式。
 

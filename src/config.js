@@ -1,7 +1,7 @@
 import z from '@deepseek-ai/schemastery';
 
 /** Settings namespace for this plugin (written to DSH settings.yaml). */
-export const NS = 'computer-user';
+export const NS = 'computer-user-vision';
 
 /** Runtime settings schema (schemastery). Top fields are the "just-opened" card; the rest go to Advanced. */
 export const Config = z.object({

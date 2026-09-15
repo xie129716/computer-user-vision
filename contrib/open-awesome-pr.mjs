@@ -65,7 +65,7 @@ const BRANCH = `add/${OWNER}__${PLUGIN}`;
 const GH = resolveGh();
 
 const REPO_URL = `https://github.com/${OWNER}/${PLUGIN}`;
-const TARBALL = `${REPO_URL}/releases/latest/download/computer-user.tgz`;
+const TARBALL = `${REPO_URL}/releases/latest/download/computer-user-vision.tgz`;
 
 /**
  * The one file this PR adds.
@@ -135,11 +135,13 @@ So the outcome I am asking for is either "list this one, and drop or annotate
 \`jing-hy__computer-user.yml\`", or whichever form you would rather have. I maintain the fork, not
 upstream, and the call is yours to make on the evidence above.
 
-Why it is a binary choice rather than an addition: the package name is still \`computer-user\`, and
-\`cordis.patch.yml\` registers cordis row id \`computer-user\` — deliberately, so a profile can drop this
-fork in exactly where the original sat. A profile cannot hold both: one \`node_modules/computer-user\`,
-one row id. Renaming would break the drop-in, which is why it is stated here rather than changed
-quietly.
+Why it is still a choice between the two rather than an addition: the fork and upstream register the
+same 10 tool names (\`computer_screenshot\`, \`computer_click\`, …), so a profile can only run one of
+them — a second registration in the same layer fails. The two are now installable under distinct
+package names (\`computer-user-vision\` here, \`computer-user\` upstream), and that rename is itself part
+of the fix: a shared name made every npm-keyed reader resolve upstream — the plugin market showed
+upstream's version and description on this fork's card — and installing by that name got upstream's
+code, which does not load on current DSH.
 
 ## What the fork adds, all of it in the repository
 
@@ -209,11 +211,12 @@ the harness's own \`@deepseek-ai/*\` packages, with an explicit prerelease branc
 \`>=0.1.0-rc.6 <0.1.5-0 || >=0.1.5-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0\`. Nothing here resolves to a
 copy of anyone's work.
 
-**The \`tarball:\` field is load-bearing, not cosmetic.** npm's \`computer-user\` is upstream's package
-(\`repository\` -> \`jing-hy/computer-user\`), so anyone installing by that name gets upstream's code —
-the version that does not load. The release tarball is the only install path for this fork, so please
-keep the field. The corollary is expected rather than a defect: the npm-linkage rule will not attach a
-download figure here, because npm's \`computer-user\` points at a different repository.
+**The \`tarball:\` field is load-bearing, not cosmetic.** Upstream's npm package is \`computer-user\`
+(\`repository\` -> \`jing-hy/computer-user\`); this fork is \`computer-user-vision\`, published separately —
+and until it is published, the release tarball is the only install path that gets this fork's code.
+Installing by the upstream name gets upstream, which does not load on current DSH. Once
+\`computer-user-vision\` is on npm with \`repository\` pointing at this repository, the npm-linkage rule
+attaches a download figure automatically and nothing in the entry needs to change for that.
 
 ## Flagged rather than left to be found
 
@@ -246,7 +249,7 @@ PowerShell/SendInput with UI Automation refs and a user-visible stop.
   image-capable route, that none is attached on a text-only route, and that \`screen_per_pixel\` still
   reproduces the real screen size after the host halves the picture
   (522 * 3.6782 = 1920.0 vs screen 1920).
-- \`releases/latest/download/computer-user.tgz\` returns HTTP 200 and the asset name is version-free,
+- \`releases/latest/download/computer-user-vision.tgz\` returns HTTP 200 and the asset name is version-free,
   so it will not 404 on the next release.
 - Official packages are \`peerDependencies\`, with an explicit prerelease branch per tuple. The
   previous \`>=0.1.0-rc.6\` silently excluded \`0.1.5-rc.2\`, the build actually shipping — verified

@@ -291,10 +291,10 @@ function modeGate(cfg, toolName, approvedSessions, sessionId, controlState) {
   }
   const mode = cfg.mode ?? 'manual';
   if (mode === 'disabled') {
-    throw new Error('computer-user 已禁用：请在「设置 → 电脑操作」切换模式后再使用');
+    throw new Error('computer-user-vision 已禁用：请在「设置 → 电脑操作」切换模式后再使用');
   }
   if (mode === 'readonly' && !READONLY_TOOLS.has(toolName)) {
-    throw new Error(`computer-user 只读模式：${toolName} 不允许执行，仅截图/读光标/等待可用`);
+    throw new Error(`computer-user-vision 只读模式：${toolName} 不允许执行，仅截图/读光标/等待可用`);
   }
   if (mode === 'manual' && !READONLY_TOOLS.has(toolName)) {
     // The approval store is the source of truth because it also knows about the
@@ -444,8 +444,8 @@ function screenshotEnvelope(value) {
 }
 
 export function createComputerTools({ runPs, getConfig, approvedSessions, sessionId, setMode, ctx, controlState }) {
-  if (typeof runPs !== 'function') throw new Error('computer-user: runPs is required');
-  if (typeof getConfig !== 'function') throw new Error('computer-user: getConfig is required');
+  if (typeof runPs !== 'function') throw new Error('computer-user-vision: runPs is required');
+  if (typeof getConfig !== 'function') throw new Error('computer-user-vision: getConfig is required');
 
   const gate = (toolName) => modeGate(getConfig(), toolName, approvedSessions, sessionId, controlState);
 
@@ -544,7 +544,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         : 0;
 
       const cwd = exec?.agent?.session?.header?.cwd ?? process.cwd();
-      const dir = cfg.screenshot_dir?.trim() ? pathResolve(cwd, cfg.screenshot_dir) : join(tmpdir(), 'computer-user');
+      const dir = cfg.screenshot_dir?.trim() ? pathResolve(cwd, cfg.screenshot_dir) : join(tmpdir(), 'computer-user-vision');
 
       // purpose: "look" is the cheap path for "just show me the screen".
       //
@@ -677,7 +677,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
         };
       } catch (error) {
         // Never lose the screenshot: fall back to the path-based contract.
-        ctx?.logger?.warn?.(`[computer-user] screenshot attach failed: ${String(error?.message ?? error)}`);
+        ctx?.logger?.warn?.(`[computer-user-vision] screenshot attach failed: ${String(error?.message ?? error)}`);
         return { ...base, vision: false };
       }
     },
@@ -1121,7 +1121,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
     description: [
       'Change the runtime mode to one of: disabled / readonly / manual / auto.',
       'Only works when the setting「AI 可自行修改运行模式」(ai_can_change_mode) is on; otherwise this tool refuses.',
-      'Settings card dropdown stays in sync: the new mode is written to the computer-user settings namespace (same store the dropdown reads).',
+      'Settings card dropdown stays in sync: the new mode is written to the computer-user-vision settings namespace (same store the dropdown reads).',
       'Parameters: mode (required, one of disabled/readonly/manual/auto).',
     ].join(' '),
     parameters: {
@@ -1137,7 +1137,7 @@ export function createComputerTools({ runPs, getConfig, approvedSessions, sessio
       if (typeof setMode !== 'function') throw new Error('computer_set_mode: 设置服务不可用');
       const cfg = getConfig();
       if (cfg.mode === 'disabled') {
-        throw new Error('computer-user 已禁用：无法在禁用模式下修改运行模式（需用户在设置中先解除禁用）');
+        throw new Error('computer-user-vision 已禁用：无法在禁用模式下修改运行模式（需用户在设置中先解除禁用）');
       }
       if (cfg.ai_can_change_mode !== true) {
         throw new Error('computer_set_mode: 当前未允许 AI 修改运行模式（设置「AI 可自行修改运行模式」未开启）');

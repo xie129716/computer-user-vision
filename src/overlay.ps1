@@ -1,4 +1,4 @@
-# computer-user / overlay.ps1 - the "an agent is driving your computer" indicator.
+# computer-user-vision / overlay.ps1 - the "an agent is driving your computer" indicator.
 #
 # Shows, while the plugin holds control of the desktop:
 #   1. a slowly pulsing gradient frame on all four screen edges

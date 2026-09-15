@@ -31,7 +31,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { PKG_DIR } from './_profile.mjs';
 
 const OVERLAY = join(PKG_DIR, 'src', 'overlay.ps1');
-const dir = join(tmpdir(), 'computer-user');
+const dir = join(tmpdir(), 'computer-user-vision');
 const heartbeat = join(dir, 'hit-heartbeat');
 const stopFile = join(dir, 'hit-stop');
 const pauseFile = join(dir, 'hit-pause');

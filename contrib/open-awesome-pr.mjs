@@ -12,7 +12,8 @@
  * repository-age gate has passed is the intended workflow.
  *
  *   node contrib/open-awesome-pr.mjs           # prepare the branch, print the compare URL
- *   node contrib/open-awesome-pr.mjs --open    # also open the PR
+ *   node contrib/open-awesome-pr.mjs --open    # also open the PR (ready for review)
+ *   node contrib/open-awesome-pr.mjs --open --draft   # open it as a draft instead
  *
  * Needs an authenticated `gh`. If github.com needs a proxy on your machine,
  * export HTTPS_PROXY first — this script inherits the environment and never
@@ -22,6 +23,13 @@
  * one day (scripts/check-submission.mjs, MIN_AGE_DAYS = 1). Opening the PR before
  * that just paints a red X on a submission that is otherwise complete, and their
  * contributing guide asks you to wait. Prepare now, `--open` later.
+ *
+ * Why ready-for-review is the default rather than a draft: a draft is still a
+ * `pull_request` event, so pr-check.yml/pr-gate.yml do run — but pr-guard.yml,
+ * regate.yml and held-rescan.yml all skip drafts (`if (pr.isDraft) continue`), so
+ * a draft also opts out of the scheduled re-gate and rescan bookkeeping. The age
+ * bar is a one-time gate and this submission is past it, so a draft would only
+ * delay the review. `--draft` is still there for when only CI is wanted.
  */
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -64,33 +72,71 @@ const TARBALL = `${REPO_URL}/releases/latest/download/computer-user.tgz`;
  *
  * Every clause is a claim the reviewer can check against the code, which is what
  * the guide asks for — and why there are no adjectives here: "13 computer_* tools"
- * is countable, `expect_window` and the Stop button are greppable, and
+ * is countable, `expect_window` and `Ctrl+Alt+Esc` are greppable, and
  * "vision-native" would only have been a word. A description containing ": "
  * must be quoted.
+ *
+ * Length is deliberate as well. The list's own entries run 182 characters at the
+ * median and 314 at the 90th percentile; the first draft of this line was 495
+ * (p98.5). Fewer clauses means fewer claims to verify, so it is trimmed into the
+ * p90 band — keeping every checkable claim and every one that separates this fork
+ * from the entry it forks.
  */
 const ENTRY = `url: ${REPO_URL}
 name: ${OWNER}/${PLUGIN}
 category: tools
 tarball: ${TARBALL}
 description:
-  en: 'Windows desktop control for a fork of computer-user: 13 computer_* tools. computer_screenshot and computer_elements return the focused window controls as refs, and computer_click accepts a ref or the control visible text, so a click lands on the exact control rectangle instead of on a pixel estimated from a downscaled screenshot; an expect_window guard refuses input when the wrong window has focus; a control indicator Stop button or Ctrl+Alt+Esc blocks every call until the user re-approves.'
-  zh: 'computer-user 分叉的 Windows 桌面操控：13 个 computer_* 工具。computer_screenshot 与 computer_elements 把前台窗口的 UI Automation 控件作为引用返回，computer_click 可直接接受引用或控件可见文字，因此点击落在控件的精确矩形上，而不是从缩小截图上估计出来的像素；expect_window 前置校验在前台窗口不对时拒绝发送输入；控制指示器的「停止控制」按钮或 Ctrl+Alt+Esc 会阻断所有调用，直到用户重新授权。'
+  en: 'Windows desktop control forked from computer-user: 13 computer_* tools. Controls return as UI Automation refs, so a click lands on the exact control rectangle rather than a pixel estimated from a downscaled screenshot; expect_window rejects misdirected input, and Ctrl+Alt+Esc blocks every call until re-approval.'
+  zh: 'computer-user 分叉的 Windows 桌面操控插件：13 个 computer_* 工具。控件以 UI Automation 引用返回，点击因此落在控件的精确矩形上，而非从缩小截图估出的像素；expect_window 在前台窗口不对时拒绝输入；Ctrl+Alt+Esc 会阻断所有调用，直到用户重新授权。'
 `;
 
 const TITLE = `Add ${OWNER}/${PLUGIN}`;
 
-const BODY = `Adds one entry for \`${OWNER}/${PLUGIN}\` under \`tools\`.
+const BODY = `Adds one entry for \`${OWNER}/${PLUGIN}\` under \`tools\`. It is an unofficial fork of
+[jing-hy/computer-user](https://github.com/jing-hy/computer-user), **which is already on this list**
+(\`data/plugins/jing-hy__computer-user.yml\`, also under \`tools\`). Please read the next section first —
+that overlap is the decision this PR is asking for, not a detail underneath it.
 
-**What it is.** A Windows desktop-control plugin: it reads the screen and drives the mouse and
-keyboard. A screenshot rides the tool result as a real image block, and the focused window's
-controls come back as refs, so a click is addressed as \`computer_click {ref:"e12"}\` (or by the
-control visible text) and lands on the control exact rectangle; a text-only route falls back to a
-PNG path. 13 \`computer_*\` tools.
+## The slot question, first
 
-**It is an unofficial fork** of [jing-hy/computer-user](https://github.com/jing-hy/computer-user)
-(MIT; the copyright notice travels with the code in \`LICENSE\`). Upstream no longer loads on current
-DSH — a named export that no longer exists fails the whole ES module — and it only knew how to be
-looked at through an external OCR tool. What this fork adds, all of it in the repository:
+This is not an addition beside that entry: the two cannot be installed together (see "Why this is a
+slot question" below), so one of them has to be the row. The review rules say a fork *is* added when
+it is the better-kept one or when it genuinely adds something, and that "the rule is not first-come;
+the rule is whichever is better". I am not asking you to take that on faith.
+
+**Upstream does not load on the DSH that ships today.** Its \`src/index.js\` opens with
+
+    import { settingsNamespace } from '@deepseek-ai/dsh-settings';
+
+and \`@deepseek-ai/dsh-settings@0.1.5-rc.2\` exports exactly four names — \`SettingsConflictError\`,
+\`SettingsProvider\`, \`default\`, \`redactSecrets\`. A missing named export fails the whole ES module at
+link time, so \`apply()\` never runs: the plugin appears in \`dsh --dump-config\` and then does nothing,
+with nothing in the boot log. Both halves are reproducible in about a minute:
+
+    node -e "import('@deepseek-ai/dsh-settings').then(m=>console.log(Object.keys(m).sort().join(', ')))"
+    # SettingsConflictError, SettingsProvider, default, redactSecrets   <- no settingsNamespace
+
+    curl -s https://raw.githubusercontent.com/jing-hy/computer-user/main/src/index.js | head -3
+
+The fork's fix is \`import * as settingsModule from '@deepseek-ai/dsh-settings'\` — a namespace import
+cannot fail at link time on a missing name — commented at \`src/index.js:63\`, with the mechanism
+written up in \`docs/adaptation-notes.md\`.
+
+Maintenance points the same direction: upstream last pushed 2026-08-27; this fork 2026-09-14, 18
+releases, 0.3.32 (upstream's npm tag is 0.3.6).
+
+So the outcome I am asking for is either "list this one, and drop or annotate
+\`jing-hy__computer-user.yml\`", or whichever form you would rather have. I maintain the fork, not
+upstream, and the call is yours to make on the evidence above.
+
+Why it is a binary choice rather than an addition: the package name is still \`computer-user\`, and
+\`cordis.patch.yml\` registers cordis row id \`computer-user\` — deliberately, so a profile can drop this
+fork in exactly where the original sat. A profile cannot hold both: one \`node_modules/computer-user\`,
+one row id. Renaming would break the drop-in, which is why it is stated here rather than changed
+quietly.
+
+## What the fork adds, all of it in the repository
 
 - **Element refs, so a click stops depending on a pixel estimate.** A 1920x1080 desktop is
   2,073,600 px, above the 640,000 px vision budget, so the preview a model reasons about is
@@ -121,38 +167,53 @@ looked at through an external OCR tool. What this fork adds, all of it in the re
 - **A mode gate and disk-backed approval** (\`disabled / readonly / manual / auto\`), so control is
   revocable and survives a host restart.
 
+## Two things to know before listing
+
 **On "do its dependencies point at the original".** That rule governs bundles, and this is not one: it
 ships behaviour, and it has **no \`dependencies\` at all** — the only entries are \`peerDependencies\` on
-the harness's own \`@deepseek-ai/*\` packages, so nothing here resolves to a copy of anyone's work. The
-fork relationship is stated where identity is actually read: \`description\`, \`author\`, an explicit
-\`forkedFrom\` field, the first line of the README, and \`repository\` — which points at this repository,
-not upstream.
+the harness's own \`@deepseek-ai/*\` packages, with an explicit prerelease branch per tuple:
+\`>=0.1.0-rc.6 <0.1.5-0 || >=0.1.5-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0\`. Nothing here resolves to a
+copy of anyone's work.
 
-Two things in the same spirit, flagged rather than left to be found:
+**The \`tarball:\` field is load-bearing, not cosmetic.** npm's \`computer-user\` is upstream's package
+(\`repository\` -> \`jing-hy/computer-user\`), so anyone installing by that name gets upstream's code —
+the version that does not load. The release tarball is the only install path for this fork, so please
+keep the field. The corollary is expected rather than a defect: the npm-linkage rule will not attach a
+download figure here, because npm's \`computer-user\` points at a different repository.
+
+## Flagged rather than left to be found
 
 - This repository is **not** a GitHub fork (\`fork: false\`, no \`parent\`). It was built from the
   published 0.3.6 tarball rather than from a clone, and GitHub sets fork status only at creation, so
-  it cannot be added afterwards.
-- The package name is still \`computer-user\`, deliberately: \`cordis.patch.yml\` registers the plugin
-  under that specifier, so a profile can drop this fork in exactly where the original sat. Renaming
-  it would break that.
+  it cannot be added afterwards. The relationship is recorded in \`package.json\` instead: \`author\`,
+  an explicit \`forkedFrom\`, and a \`repository\` pointing at this repository, with upstream's
+  copyright line kept in \`LICENSE\` (MIT).
+- \`screenshots.json\` declares 4 relative paths; all exist and stay inside the plugin directory, so
+  the storefront has a stable source it can pick up on its next nightly build.
 
-**Not a duplicate of the existing computer-use entry.** \`qphotoai/dsh-computer-use-windows\` is a
-different implementation (UIA + cua-driver + optional GLM vision). This one is PowerShell/SendInput
-with vision-native captures and a user-visible stop. Per the review rules, whoever is better kept
-keeps the slot — flagging the overlap so you can judge it rather than discover it.
+## Not a duplicate of the other computer-use entries
 
-**Checks I ran before submitting.**
+\`988hj7tczd-oss/dsh-computer-use\`, \`Anionex/dsh-computer-use\`,
+\`qphotoai/dsh-computer-use-windows\`, \`Yu-tao-Li/dsh-computer-use-win\`, \`ZRui-C/dsh-computer-use\`,
+\`JohnXu22786/computer-control\` and \`Fish121380/auto-mouse\` are separate implementations; this one is
+PowerShell/SendInput with UI Automation refs and a user-visible stop.
+
+## Checks I ran before submitting
+
 - \`dsh.bundle\` is declared in the root \`package.json\` with a \`cordis.patch.yml\` beside it.
-- \`screenshots.json\` at the repository root lists 4 relative paths; all exist and stay inside the
-  plugin directory.
-- The \`tarball\` asset name is version-free, and
-  \`releases/latest/download/computer-user.tgz\` returns HTTP 200 (verified), so it will not 404 on
-  the next release.
-- Official packages are \`peerDependencies\`, with an explicit prerelease branch per tuple:
-  \`>=0.1.0-rc.6 <0.1.5-0 || >=0.1.5-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0\`. The previous
-  \`>=0.1.0-rc.6\` silently excluded \`0.1.5-rc.2\`, the build actually shipping — verified with
-  node-semver, not by eye.
+- \`scripts/check-submission.mjs --only-list\` against current \`main\` — **pass**.
+- \`scripts/generate-readme.mjs\` — exit 0, and the entry line renders.
+- \`scripts/check-bleed.mjs\` — **no pair**: this description shares no 40-character run with any
+  existing entry, including the upstream one it forks.
+- The description was trimmed from 495 characters to 313 (the list runs 182 at the median and 314 at
+  p90), so there are fewer claims to check; every remaining one is countable or greppable.
+- \`releases/latest/download/computer-user.tgz\` returns HTTP 200 and the asset name is version-free,
+  so it will not 404 on the next release.
+- Official packages are \`peerDependencies\`, with an explicit prerelease branch per tuple. The
+  previous \`>=0.1.0-rc.6\` silently excluded \`0.1.5-rc.2\`, the build actually shipping — verified
+  with node-semver, not by eye.
+- Installed into a real \`web\` profile and exercised: \`apply()\` registers 13 tools, the settings
+  namespace resolves through the 0.1.5 provider API, and \`/computer\` registers.
 `;
 
 // Inherit the environment exactly as it is. A proxy address is a property of the
@@ -191,7 +252,8 @@ async function ensureFork() {
 }
 
 async function main() {
-  const open = process.argv.includes('--open');
+  const open = process.argv.includes('--open')
+  const draft = process.argv.includes('--draft');
 
   await ensureFork();
   const parent = gh(['api', `repos/${UPSTREAM}/git/ref/heads/main`]);
@@ -227,14 +289,14 @@ async function main() {
   console.log(`compare: ${compare}`);
 
   if (!open) {
-    console.log('\nprepared only. Run again with --open once the repository is 1 day old:');
-    console.log('  node contrib/open-awesome-pr.mjs --open');
-    return 0;
+    console.log('\nprepared only. Re-run with --open once the repository is 1 day old:')
+    console.log('  node contrib/open-awesome-pr.mjs --open')
+    return 0
   }
 
   const pr = gh(['api', '--method', 'POST', `repos/${UPSTREAM}/pulls`, '--input', '-'],
-    { title: TITLE, head: `${OWNER}:${BRANCH}`, base: 'main', body: BODY, draft: true });
-  console.log(`\nopened draft PR #${pr.number}: ${pr.html_url}`);
+    { title: TITLE, head: `${OWNER}:${BRANCH}`, base: 'main', body: BODY, draft });
+  console.log(`\nopened ${draft ? 'draft ' : ''}PR #${pr.number}: ${pr.html_url}`)
   return 0;
 }
 
